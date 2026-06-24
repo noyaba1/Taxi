@@ -1,0 +1,21 @@
+# --- Never commit the heavy data (1.9 GB) or generated artifacts ---
+train.csv/
+data/raw/
+data/sample/
+data/processed/
+*.parquet/
+outputs/maps/
+outputs/routes/
+outputs/logs/
+
+# Raw lecturer files (keep them locally, not in git)
+*.csv
+
+# --- Python / Spark cruft ---
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+spark-warehouse/
+metastore_db/
+derby.log
