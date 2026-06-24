@@ -1,0 +1,30 @@
+# ============================================================
+# Porto Taxi Big Data Project - LOCAL development requirements
+# ============================================================
+# IMPORTANT: PySpark officially supports Python 3.8 - 3.12.
+# You currently have Python 3.13.1 which is NOT officially supported
+# by PySpark and may crash. Strongly recommended: create a venv/conda
+# env with Python 3.11. See README "Phase 0".
+# ------------------------------------------------------------
+
+# --- Core engine (local Spark, same API as DataProc) ---
+pyspark==3.5.1
+
+# --- Spatial encoding (we will compare these) ---
+h3==3.7.7              # Uber H3 hexagonal grid  (RECOMMENDED for this project)
+python-geohash==0.8.5  # Geohash baseline for comparison
+# s2sphere==0.2.5      # Optional: Google S2 (enable later if we benchmark it)
+
+# --- Approximate / probabilistic data structures ---
+datasketches==5.0.2    # HyperLogLog, CPC, Theta, KLL/quantiles (T-Digest-like), Count-Min
+# (Spark also ships approx_count_distinct / approxQuantile natively - we will use both)
+
+# --- Lightweight local analysis & viz (SMALL outputs only, never full data) ---
+pandas==2.2.2
+numpy==1.26.4
+matplotlib==3.9.0
+folium==0.16.0         # interactive Leaflet maps for trajectories / heatmaps
+pyarrow==15.0.2        # fast parquet I/O bridge between Spark and pandas
+
+# --- Dev quality ---
+tqdm==4.66.4
