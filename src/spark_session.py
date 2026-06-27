@@ -10,11 +10,79 @@ Why a factory?
   scripts run in both places untouched.
 """
 import os
+import sys
 from pyspark.sql import SparkSession
 from src import config
 
 
+def _short_path(path: str) -> str:
+    """Return the Windows 8.3 short path (ASCII) for `path`, else unchanged."""
+    if os.name != "nt" or not path:
+        return path
+    import ctypes
+    buf = ctypes.create_unicode_buffer(1024)
+    n = ctypes.windll.kernel32.GetShortPathNameW(str(path), buf, 1024)
+    return buf.value if n else path
+
+
+def _ensure_ascii_spark_paths() -> None:
+    """
+    Spark's Windows launcher (spark-class2.cmd) cannot handle non-ASCII paths
+    in the classpath. If this project lives under a non-ASCII path (e.g. a
+    Hebrew 'Desktop' folder under OneDrive), the JVM gets a corrupted classpath
+    and fails with ClassNotFoundException: SparkSubmit.
+
+    Fix: point SPARK_HOME and the worker/driver Python at the ASCII 8.3 short
+    paths. This is a no-op on Linux/DataProc (os.name != 'nt') and on already
+    ASCII paths, so it is safe to always call.
+    """
+    if os.name != "nt":
+        return
+
+    def is_ascii(s: str) -> bool:
+        return all(ord(c) < 128 for c in s)
+
+    try:
+        import pyspark
+        spark_home = os.environ.get("SPARK_HOME") or os.path.dirname(pyspark.__file__)
+    except Exception:  # noqa: BLE001
+        spark_home = os.environ.get("SPARK_HOME", "")
+
+    if is_ascii(sys.executable) and is_ascii(spark_home):
+        return  # clean path, nothing to do
+
+    short_py = _short_path(sys.executable)
+    os.environ["SPARK_HOME"] = _short_path(spark_home)
+    os.environ["PYSPARK_PYTHON"] = short_py
+    os.environ["PYSPARK_DRIVER_PYTHON"] = short_py
+
+
+def _ensure_hadoop_home() -> None:
+    """
+    On Windows, Spark's local-filesystem WRITE path needs winutils.exe +
+    hadoop.dll (Hadoop's Shell/NativeIO). Reads work without them, writes do
+    not. If HADOOP_HOME is already set we respect it; otherwise we probe the
+    standard install location used in SETUP.md. No-op on Linux/DataProc.
+    """
+    if os.name != "nt":
+        return
+    if os.environ.get("HADOOP_HOME") and os.path.exists(
+        os.path.join(os.environ["HADOOP_HOME"], "bin", "winutils.exe")
+    ):
+        return
+    for candidate in (r"C:\hadoop", os.environ.get("HADOOP_HOME", "")):
+        if candidate and os.path.exists(os.path.join(candidate, "bin", "winutils.exe")):
+            os.environ["HADOOP_HOME"] = candidate
+            bin_dir = os.path.join(candidate, "bin")
+            if bin_dir not in os.environ.get("PATH", ""):
+                os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+            return
+
+
 def get_spark(app_name: str = "porto-taxi", shuffle_parts: int | None = None) -> SparkSession:
+    _ensure_ascii_spark_paths()  # Windows non-ASCII path guard (no-op elsewhere)
+    _ensure_hadoop_home()        # Windows winutils for local writes (no-op elsewhere)
+
     env = os.environ.get("SPARK_ENV", "local")
     builder = SparkSession.builder.appName(app_name)
 
