@@ -7,6 +7,9 @@ data/processed/
 outputs/maps/
 outputs/routes/
 outputs/logs/
+# Generated statistic reports (keep the folder placeholder, ignore contents)
+outputs/statistics/*
+!outputs/statistics/.gitkeep
 
 # Raw lecturer files (keep them locally, not in git)
 *.csv

@@ -71,7 +71,9 @@ def trip_metrics_udf(points_series: pd.Series) -> pd.DataFrame:
                 out[k].append(None)
             continue
 
-        arr = np.asarray(pts, dtype="float64")   # shape (n, 2): col0=lon col1=lat
+        # Spark hands `array<array<double>>` to pandas as an object array of
+        # per-point arrays; build a clean (n, 2) float matrix explicitly.
+        arr = np.array([(p[0], p[1]) for p in pts], dtype="float64")  # col0=lon col1=lat
         lon, lat = arr[:, 0], arr[:, 1]
 
         # Consecutive-segment distances (length n-1).
@@ -146,11 +148,19 @@ def main(use_sample: bool) -> None:
     feats.cache()  # we read it twice below (report + write)
 
     # --- Defensible quality report ---
-    n = feats.count()
-    anom = feats.filter(F.col("is_anomalous")).count()
+    # One pass computes the row count + every flag count together (no N+1 jobs).
+    flag_cols = ["is_teleport", "is_idle", "is_too_fast", "is_too_short", "is_anomalous"]
+    agg = feats.select(
+        F.count(F.lit(1)).alias("n"),
+        *[F.sum(F.col(c).cast("int")).alias(c) for c in flag_cols],
+    ).collect()[0]
+    n = agg["n"]
     print("=" * 56)
     print(f"  trips with features : {n:,}")
-    print(f"  anomalous trips     : {anom:,}  ({100*anom/n:.1f}%)")
+    for c in flag_cols:
+        cnt = agg[c] or 0
+        print(f"  {c:<16} : {cnt:>8,}  ({100*cnt/n:5.2f}%)")
+    print("=" * 56)
     feats.select(
         F.round(F.avg("total_distance_km"), 2).alias("avg_dist_km"),
         F.round(F.avg("duration_sec") / 60, 1).alias("avg_dur_min"),

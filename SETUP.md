@@ -110,10 +110,20 @@ So winutils **is** required for our stack (PySpark 3.5.1 bundles **Hadoop
    [Environment]::SetEnvironmentVariable("HADOOP_HOME", "C:\hadoop", "User")
    ```
 
-> **Reproducibility:** `src/spark_session.py::_ensure_hadoop_home()` also probes
-> `C:\hadoop` at runtime and sets `HADOOP_HOME` + `PATH` automatically, so a
-> fresh clone with winutils in `C:\hadoop\bin` works even before you set the
-> env var by hand.
+> **Reproducibility:** `src/spark_session.py::_ensure_hadoop_home()` probes
+> `C:\hadoop` at runtime and sets `HADOOP_HOME` **and always prepends
+> `C:\hadoop\bin` to `PATH`**, so a fresh clone with winutils in `C:\hadoop\bin`
+> works even before you set the env var by hand.
+
+> **Correction discovered during M1 (Phase 2):** the earlier claim "reads work
+> without winutils, only writes need it" is **wrong**. On Windows, reading a
+> Parquet *directory* calls `FileUtil.canRead → NativeIO$Windows.access0`, a
+> **native** method. So reads also require **`hadoop.dll` to be loaded**, which
+> only happens if its directory is on the JVM library path (derived from `PATH`).
+> Both files are needed: `winutils.exe` (writes, `Shell` check) **and a loaded
+> `hadoop.dll`** (reads, `access0`). The early-return bug that skipped adding
+> `bin` to `PATH` caused an intermittent `UnsatisfiedLinkError: access0`; it is
+> fixed by always prepending `bin` to `PATH`.
 
 ---
 
@@ -214,7 +224,9 @@ rows AFTER  cleaning       : 4,867
 | `Py4JJavaError` right at `getOrCreate()`, mentions class version | Java 17+ or Python 3.13 | Use Java 11 + Python 3.11 venv |
 | `ClassNotFoundException: SparkSubmit` (jars exist!) / path shows as `?????` | non-ASCII project path | Auto-fixed by `_ensure_ascii_spark_paths()` (§6b); or move to `C:\dev\taxi` |
 | `HADOOP_HOME ... unset` / `Shell.checkHadoopHome` on write | winutils missing | Step 6 |
+| `UnsatisfiedLinkError: NativeIO$Windows.access0` on **read** | `hadoop.dll` not loaded (its dir not on `PATH`) | ensure `hadoop.dll` in `C:\hadoop\bin`; `_ensure_hadoop_home()` puts it on `PATH` (Step 6) |
 | `UnsatisfiedLinkError` / `NativeIO` on write | winutils missing | Step 6 |
+| `ValueError: setting an array element with a sequence` in a UDF | object-array nesting from `array<array<double>>` | build the matrix per-point: `np.array([(p[0],p[1]) for p in pts])` |
 | `NoSuchFileException` deleting `Temp\spark-*` at shutdown | benign Windows temp-cleanup race | **Ignore** — fires after `_SUCCESS`; output is intact |
 | `python worker ... version mismatch` | workers using system 3.13 | set `PYSPARK_PYTHON` to the venv python |
 | `from src import config` → ModuleNotFoundError | ran the file directly | run with `python -m src.<module>` from project root |

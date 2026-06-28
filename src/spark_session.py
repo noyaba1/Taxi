@@ -59,22 +59,28 @@ def _ensure_ascii_spark_paths() -> None:
 
 def _ensure_hadoop_home() -> None:
     """
-    On Windows, Spark's local-filesystem WRITE path needs winutils.exe +
-    hadoop.dll (Hadoop's Shell/NativeIO). Reads work without them, writes do
-    not. If HADOOP_HOME is already set we respect it; otherwise we probe the
-    standard install location used in SETUP.md. No-op on Linux/DataProc.
+    On Windows, BOTH the local-filesystem read and write paths go through
+    Hadoop's native layer:
+      * writes use winutils.exe (Shell.checkHadoopHome),
+      * reads call NativeIO$Windows.access0 (FileUtil.canRead during listStatus),
+        which is a NATIVE method requiring hadoop.dll to be LOADED.
+
+    `hadoop.dll` is only loaded if its directory is on the JVM's library path,
+    which on Windows is derived from PATH. So we must ALWAYS put HADOOP_HOME\\bin
+    on PATH (even when HADOOP_HOME is already set), or the JVM can't find
+    hadoop.dll and access0 throws UnsatisfiedLinkError. No-op on Linux/DataProc.
     """
     if os.name != "nt":
         return
-    if os.environ.get("HADOOP_HOME") and os.path.exists(
-        os.path.join(os.environ["HADOOP_HOME"], "bin", "winutils.exe")
-    ):
-        return
-    for candidate in (r"C:\hadoop", os.environ.get("HADOOP_HOME", "")):
+    # Pick HADOOP_HOME: respect an existing valid one, else probe C:\hadoop.
+    candidates = [os.environ.get("HADOOP_HOME", ""), r"C:\hadoop"]
+    for candidate in candidates:
         if candidate and os.path.exists(os.path.join(candidate, "bin", "winutils.exe")):
             os.environ["HADOOP_HOME"] = candidate
             bin_dir = os.path.join(candidate, "bin")
-            if bin_dir not in os.environ.get("PATH", ""):
+            # ALWAYS ensure bin is on PATH so the JVM can load hadoop.dll.
+            path_parts = os.environ.get("PATH", "").split(os.pathsep)
+            if bin_dir not in path_parts:
                 os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
             return
 
