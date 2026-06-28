@@ -146,12 +146,30 @@ memory · scalability · why this over alternatives.**
   squares, orthogonal vs diagonal neighbors have different distances and create
   ambiguous transitions. H3 removes that distortion.
 
-- **Resolution: H3 res 9 (~174 m edge, ~0.1 km²).** Quantitative justification:
-  a taxi at 50 km/h moves ~210 m per 15 s sample ≈ ~1 res-9 cell, so consecutive
-  GPS samples land in adjacent cells → the cell-sequence faithfully tracks the
-  route. Res 8 (~461 m) loses route shape; res 10 (~65 m) lets GPS noise (~10 m)
-  flip cells and fragments identical routes. We will **sensitivity-test 8/9/10**
-  in evaluation.
+- **Resolution: H3 res 9 (~174 m edge, ~0.1 km²) — confirmed empirically (M3).**
+  Quantitative justification: a taxi at 50 km/h moves ~210 m per 15 s sample ≈ ~1
+  res-9 cell, so consecutive GPS samples land in adjacent cells → the cell-sequence
+  faithfully tracks the route. Res 8 (~461 m) loses route shape; res 10 (~65 m)
+  lets GPS noise flip cells and fragments identical routes.
+
+  **Sweep evidence (5k sample):** `len_ratio` = encoded length / GPS path length
+  (1.0 = ideal); `compression` = raw cells / compact cells (denoising power).
+
+  | res | edge | avg compact cells | compression | len_ratio |
+  |----|------|------|------|------|
+  | 8 | 461 m | 8.0 | 7.44x | 1.208 |
+  | **9** | **174 m** | **17.5** | **3.36x** | **1.158** |
+  | 10 | 66 m | 30.0 | 1.83x | 1.07 |
+
+  **Why 9 wins (not 10, despite its better len_ratio):** for *frequent-substring
+  mining* the goal is that identical real routes produce identical strings while
+  distinct routes stay distinct. Res 10 barely denoises (1.83x) → GPS jitter
+  fragments identical routes into different strings → support is undercounted and
+  sequences are ~2x longer (bigger shuffle). Res 8 over-collapses (7.44x) → merges
+  distinct streets → false support and worst length error (1.208). Res 9 is the
+  balance: meaningful denoising with preserved route shape. All `len_ratio`s are
+  within ~20%, so length accuracy is not the deciding factor; route-matching
+  stability is. (Reports: `outputs/statistics/h3_resolution_comparison_*.md`.)
 - **Denoising (critical for substring matching):** map points→cells, then
   **run-length collapse consecutive duplicates**, and **gap-fill** non-adjacent
   hops with `h3.h3_line`. Without this, jitter splits identical routes and
