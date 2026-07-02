@@ -200,6 +200,38 @@ memory · scalability · why this over alternatives.**
 - **Why both:** k-gram is the scalable workhorse; the suffix array is the
   elegant, redundancy-free method the assignment names and gives us *maximal*
   routes for free.
+- **Why contiguous n-grams and NOT PrefixSpan (M5 decision):** a physical route
+  is a *continuous* path. A gapped subsequence (what PrefixSpan/FP-growth mine)
+  would allow a "route" that skips from one cell to a non-adjacent cell — a
+  teleport that never happened. Gapped mining is therefore both *semantically
+  wrong* here and a strictly harder, more expensive problem. Contiguous substring
+  counting is the correct and cheaper model. `support` counts **distinct trips**
+  containing the sub-route (deduped within a trip), not repeated occurrences.
+
+- **M5 — exact baseline implemented & validated** (`route_mining_exact.py`,
+  `verify_route_mining.py`). On the 5k sample: 1,088,976 window emissions →
+  810,933 distinct sub-routes; wall time ~53 s (`local[*]`). Verified by an
+  independent brute-force containment re-count (e.g. L≥1 km top route support
+  285 = 285; L≥3 km top 85 = 85). Top-support by threshold:
+
+  | min_len | candidates ≥L | top support |
+  |--------|------|------|
+  | 1 km | 810,933 | 285 (5.9% of trips) |
+  | 3 km | 687,707 | 85 |
+  | 5 km | 548,904 | 29 |
+  | 10 km | 302,490 | 3 |
+  | 20 km | 135,858 | 1 |
+  | 40 km | 19,698 | 1 |
+
+  **Sample-size caveat (important for defense):** support collapses to 1–3 for
+  ≥10 km because 5k *random* trips are too sparse for long specific routes to
+  repeat. This is a sampling property, not a bug — the ≥10 km thresholds only
+  become meaningful on the full 1.7M dataset. Short thresholds already show clear
+  popular corridors. The huge distinct-key count (810k, mostly support 1) is the
+  cardinality/skew that **M7's Count-Min + heavy-hitters** will compress.
+- **Safety bound:** windows are enumerated up to ~45 km (just above the max 40 km
+  threshold) so teleport/pathological trajectories cannot blow up the O(n²)
+  per-trip enumeration; irrelevant to real trips (p95 distance ≈ 13 km).
 
 ### Phase 6 — Method A: clustering-based route discovery
 - **Goal:** group similar whole routes; cluster representatives = popular routes.
