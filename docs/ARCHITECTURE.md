@@ -233,6 +233,41 @@ memory · scalability · why this over alternatives.**
   threshold) so teleport/pathological trajectories cannot blow up the O(n²)
   per-trip enumeration; irrelevant to real trips (p95 distance ≈ 13 km).
 
+- **M6 — suffix-style MAXIMAL (closed) routes implemented & validated**
+  (`route_mining_suffix.py`, `verify_suffix_mining.py`).
+  - **Problem it solves:** M5 top-lists are full of overlapping fragments of the
+    same corridor (a popular route makes all its sub-windows popular too).
+  - **Definition:** a sub-route `s` is *maximal/closed* iff no proper contiguous
+    super-route has support within `SUPPORT_TOL` of `s` (default 0.0 = classical
+    closed: drop `s` only if a longer route has EQUAL support).
+  - **Suffix-tree mechanism (why it's "suffix-style"):** support is monotonic
+    under extension, so the highest support any super-route can reach = the best
+    SINGLE-CELL extension's support. `s` is closed ⇔ every one-cell left/right
+    extension has strictly lower support — exactly the suffix-tree branching-node
+    (left/right-maximal repeat) property. Computed over the sub-route set as:
+    `right_parent = t[:-1]`, `left_parent = t[1:]`, `groupBy(parent)→max(support)`,
+    keep `s` iff `max_ext_support < support(s)·(1−TOL)`. Fully Spark-native
+    (split + slice + groupBy + join), reuses the M5 support table.
+  - **How it differs from M5:** M5 = count *all* contiguous n-grams; M6 = keep
+    only the *closed* ones. Same support values, far fewer routes.
+  - **Complexity:** M5 emit/shuffle + two extra `groupBy(parent)` + two joins over
+    the ~810k-row support table (≪ the 1.09M window emit). Wall time ~65 s
+    (sample), vs ~53 s for M5.
+  - **Result (sample):** 810,933 → **24,323 maximal (3.0% kept, 97–99% reduction
+    per threshold)**; top support preserved (1 km 285, 3 km 85, 5 km 29).
+    Verified: brute-force support matches; 0 reported routes dominated by a
+    longer reported route; an M5 4-cell fragment (support 122) shown collapsing
+    into a 5-cell maximal route (support 122).
+  - **Limitations / defense notes:** (1) closedness here means "contiguous
+    super-string", not fuzzy geometric overlap — two *parallel* corridors are not
+    merged (that is the clustering method's job, Phase 6). (2) With `TOL=0` a
+    route whose extension drops support by just 1 is still kept; raise `TOL` to
+    also collapse near-equal containments. (3) The single-cell-extension
+    characterization is exact *because* support is monotonic — worth stating in
+    defense. (4) Not a from-scratch suffix-array build: we exploit the closed
+    property directly, which is more Spark-friendly than distributed generalized
+    suffix-array construction (noted as the rejected alternative).
+
 ### Phase 6 — Method A: clustering-based route discovery
 - **Goal:** group similar whole routes; cluster representatives = popular routes.
 - **Design:** represent each trip as the **set of its H3 cells** → approximate
