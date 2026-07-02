@@ -268,6 +268,48 @@ memory · scalability · why this over alternatives.**
     property directly, which is more Spark-friendly than distributed generalized
     suffix-array construction (noted as the rejected alternative).
 
+- **M7 — APPROXIMATE top-k implemented & validated** (`route_mining_approx.py`,
+  `verify_approx_mining.py`).
+  - **Algorithm:** build a small sketch per partition (`mapPartitions`) and MERGE
+    the sketches — no big key shuffle, only kilobytes/partition move. The window
+    stream is deduped-within-trip, so sketch occurrence == distinct-trip support.
+    - **Space-Saving / heavy-hitters (PRIMARY):** a mergeable frequent-items
+      sketch (Misra-Gries/Space-Saving family, `frequent_strings_sketch`) keeping
+      ~0.75·2¹⁶ counters per threshold; returns the top-k **with per-item lower/
+      upper support bounds**. It is the top-k *finder*.
+    - **Count-Min (AUXILIARY):** a mergeable frequency oracle that estimates the
+      support of ANY queried route and **never underestimates**. It cannot
+      enumerate the top-k on its own (no key list), so it is auxiliary — we query
+      it for the Space-Saving candidates.
+  - **Why Space-Saving is primary:** it is a *dedicated top-k* structure with
+    bounded memory and error bounds; Count-Min only estimates a *given* key's
+    frequency and would need a separate candidate set + heap to find heavy
+    hitters. Space-Saving gives the candidates directly.
+  - **Results (sample):** memory 388 MB (exact, 810k keys) → **101 MB fixed**
+    sketches (3.8× here, and *constant regardless of input size* while exact grows
+    linearly). Accuracy vs exact top-100:
+
+    | min_len | precision@100 | SS support MAE | CMS support MAE |
+    |--------|------|------|------|
+    | 1 km | 1.00 | 0.1 | 3.8 |
+    | 3 km | 0.92 | 0.9 | 4.2 |
+    | 5 km | 0.63 | 3.9 | 3.7 |
+    | 10–40 km | 0.00 | — | ~4 |
+
+    Verified: exact support always inside SS `[lb,ub]`; CMS ≥ exact always.
+  - **Tradeoffs vs exact:** where real heavy-hitters exist (1–3 km) approx is
+    near-perfect; the 0.00 at ≥10 km is the **sample-sparsity tie artifact** (M5:
+    support ≈ 1, so "top-100" is arbitrary — *not* an approximation failure; it
+    resolves on the full 1.7M dataset). On the 5k sample approx is *slower*
+    (31.9 s vs 10.2 s) because Python per-item updates lose to a JVM groupBy on
+    small data.
+  - **Expected DataProc scalability (where approx wins):** exact cost = a
+    groupBy shuffle whose key set (810k here) grows with the data → shuffle +
+    driver memory blow up. Sketch memory and merge cost are **fixed** by capacity,
+    independent of trip count; per-partition build + tiny merge scale linearly
+    with machines. So on the full dataset / 5-node cluster, the approximate path
+    is the memory- and shuffle-bounded one, which is exactly why it exists.
+
 ### Phase 6 — Method A: clustering-based route discovery
 - **Goal:** group similar whole routes; cluster representatives = popular routes.
 - **Design:** represent each trip as the **set of its H3 cells** → approximate
