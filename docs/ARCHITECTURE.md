@@ -269,46 +269,76 @@ memory · scalability · why this over alternatives.**
     suffix-array construction (noted as the rejected alternative).
 
 - **M7 — APPROXIMATE top-k implemented & validated** (`route_mining_approx.py`,
-  `verify_approx_mining.py`).
-  - **Algorithm:** build a small sketch per partition (`mapPartitions`) and MERGE
-    the sketches — no big key shuffle, only kilobytes/partition move. The window
-    stream is deduped-within-trip, so sketch occurrence == distinct-trip support.
-    - **Space-Saving / heavy-hitters (PRIMARY):** a mergeable frequent-items
-      sketch (Misra-Gries/Space-Saving family, `frequent_strings_sketch`) keeping
-      ~0.75·2¹⁶ counters per threshold; returns the top-k **with per-item lower/
-      upper support bounds**. It is the top-k *finder*.
-    - **Count-Min (AUXILIARY):** a mergeable frequency oracle that estimates the
-      support of ANY queried route and **never underestimates**. It cannot
-      enumerate the top-k on its own (no key list), so it is auxiliary — we query
-      it for the Space-Saving candidates.
-  - **Why Space-Saving is primary:** it is a *dedicated top-k* structure with
-    bounded memory and error bounds; Count-Min only estimates a *given* key's
-    frequency and would need a separate candidate set + heap to find heavy
-    hitters. Space-Saving gives the candidates directly.
-  - **Results (sample):** memory 388 MB (exact, 810k keys) → **101 MB fixed**
-    sketches (3.8× here, and *constant regardless of input size* while exact grows
-    linearly). Accuracy vs exact top-100:
+  `verify_approx_mining.py`). All parameters live in `config.py` (sketch lg /
+  Count-Min depth·width / top-k / thresholds / seed).
+  - **Distributed algorithm:** build a small sketch per partition
+    (`mapPartitions`) and MERGE the sketches on the driver — no big key shuffle,
+    only one sketch bundle per partition moves. The window stream is
+    deduped-within-trip, so a sketch occurrence == distinct-trip support (repeats
+    inside one trip count once).
+  - **How Space-Saving works (PRIMARY, the top-k finder):** it keeps a bounded map
+    of at most *m* (item → counter). On a new item: if present, increment; if
+    room, insert with count 1; else **evict the current minimum**, give the new
+    item that minimum's count + 1 and remember that minimum as the item's *error*.
+    Heavy hitters never fall below light ones, so with *m ≫ k* the true top-k
+    survive. Each item carries `[lower, upper]` support bounds
+    (`upper = counter`, `lower = counter − error`). We use the mergeable
+    datasketches `frequent_strings_sketch` (Misra-Gries/Space-Saving family), one
+    per length threshold (~0.75·2¹⁶ ≈ 49k counters each).
+  - **How Count-Min works (AUXILIARY, the frequency oracle):** a `d × w` table of
+    counters with *d* independent hash functions. `update(x)` adds 1 to
+    `table[i][hᵢ(x)]` for every row *i*; `estimate(x) = min_i table[i][hᵢ(x)]`.
+    Collisions only ever ADD, so the estimate is an **upper bound** — Count-Min
+    *never underestimates* (error ≤ e·N/w with prob 1−2⁻ᵈ). It stores **no keys**.
+  - **Why Space-Saving is primary / why Count-Min alone can't discover candidates:**
+    Count-Min answers "how frequent is *this* route?" but cannot list *which*
+    routes are frequent — it has no key inventory, so recovering the top-k would
+    need a separate candidate set (i.e. the exact key universe we are trying to
+    avoid) plus a heap. Space-Saving *is* a key-retaining top-k structure, so it
+    yields the candidates directly; Count-Min then cross-checks their frequencies.
+  - **Guarantees:** SS `[lb,ub]` always brackets the true support; CMS estimate
+    ≥ true support; both are single-pass, mergeable, fixed-memory, and
+    **deterministic** under a fixed seed/config.
+  - **Behavior under heavy key skew (the Porto reality):** skew is where sketches
+    shine. The exact groupBy puts a few downtown "hot" sub-routes on a handful of
+    overloaded reducers (straggler risk). Sketches have **no per-key reducer**: a
+    hot key is just a large counter, updated locally and merged — no data lands on
+    one machine because a route is popular. Skew also *helps accuracy*: Space-
+    Saving's error is bounded by the *tail* mass, so genuinely heavy hitters (high
+    skew) are estimated with tiny relative error, exactly as seen at 1–3 km.
+  - **Results (sample, measured):** memory 388 MB exact (810k keys) → **101 MB
+    fixed** sketches (3.8× here; constant regardless of input size while exact
+    grows linearly). Shuffle: exact moves **1,088,976** window rows into the
+    groupBy; approx merges **1 bundle/partition**. Determinism verified (two builds
+    → identical top-k). Accuracy vs exact top-100:
 
-    | min_len | precision@100 | SS support MAE | CMS support MAE |
-    |--------|------|------|------|
-    | 1 km | 1.00 | 0.1 | 3.8 |
-    | 3 km | 0.92 | 0.9 | 4.2 |
-    | 5 km | 0.63 | 3.9 | 3.7 |
-    | 10–40 km | 0.00 | — | ~4 |
+    | min_len | overlap@100 | precision@100 | recall@100 | abs err (MAE) | rel err (MRE) | CMS MAE |
+    |--------|------|------|------|------|------|------|
+    | 1 km | 100 | 1.00 | 1.00 | 0.1 | 0.001 | 3.8 |
+    | 3 km | 92 | 0.92 | 0.92 | 0.9 | 0.029 | 4.2 |
+    | 5 km | 63 | 0.63 | 0.63 | 3.9 | 0.730 | 3.7 |
+    | 10–40 km | 0 | 0.00 | 0.00 | ~ | ~ | ~4 |
 
-    Verified: exact support always inside SS `[lb,ub]`; CMS ≥ exact always.
-  - **Tradeoffs vs exact:** where real heavy-hitters exist (1–3 km) approx is
-    near-perfect; the 0.00 at ≥10 km is the **sample-sparsity tie artifact** (M5:
-    support ≈ 1, so "top-100" is arbitrary — *not* an approximation failure; it
-    resolves on the full 1.7M dataset). On the 5k sample approx is *slower*
-    (31.9 s vs 10.2 s) because Python per-item updates lose to a JVM groupBy on
-    small data.
-  - **Expected DataProc scalability (where approx wins):** exact cost = a
-    groupBy shuffle whose key set (810k here) grows with the data → shuffle +
-    driver memory blow up. Sketch memory and merge cost are **fixed** by capacity,
-    independent of trip count; per-partition build + tiny merge scale linearly
-    with machines. So on the full dataset / 5-node cluster, the approximate path
-    is the memory- and shuffle-bounded one, which is exactly why it exists.
+  - **Tradeoffs / limitations vs exact:** where real heavy-hitters exist (1–3 km)
+    approx is near-perfect; the 0.00 at ≥10 km is the **sample-sparsity tie
+    artifact** (support ≈ 1, so "top-100" is arbitrary — *not* an approximation
+    failure; it resolves on the full 1.7M dataset). On the 5k sample approx wall
+    time can exceed exact because Python per-item updates lose to a JVM groupBy on
+    tiny data; the sketch win is memory + shuffle at scale, not wall-time on 5k.
+  - **Expected DataProc scalability (where approx wins):** exact cost = a groupBy
+    shuffle whose key set (810k here) grows with the data → shuffle bytes + driver
+    memory blow up and hot-key stragglers appear. Sketch memory and merge cost are
+    **fixed by capacity**, independent of trip count; per-partition build + tiny
+    merge scale linearly with machines. On the full dataset / 5-node cluster the
+    approximate path is the memory- and shuffle-bounded one — its reason to exist.
+  - **Defense talking points:** (1) occurrence == distinct-trip support *only
+    because* we dedupe within trip before streaming; (2) SS finds keys, CMS scores
+    keys — different jobs, hence both; (3) CMS one-sided error is *safe* for
+    "is this route popular?" (never hides a real hot route); (4) precision is high
+    exactly where it matters (heavy hitters) and the ≥10 km zeros are data
+    sparsity, provable by the identical 0.00 in the exact top-100 ties; (5) sketches
+    turn skew from a liability (reducer stragglers) into an asset (tight bounds on
+    hot keys).
 
 ### Phase 6 — Method A: clustering-based route discovery
 - **Goal:** group similar whole routes; cluster representatives = popular routes.

@@ -59,3 +59,20 @@ H3_RESOLUTION = 9       # ~174 m edge hexagons - justified in README Phase 4
 # 4. SPARK TUNING (local). DataProc overrides these via cluster config.
 # ------------------------------------------------------------------
 LOCAL_SHUFFLE_PARTITIONS = 16   # small for a laptop; DataProc uses ~200+
+
+# ------------------------------------------------------------------
+# 5. ROUTE MINING (Phase 5 / M5-M7) - single source of truth
+# ------------------------------------------------------------------
+ROUTE_LENGTH_THRESHOLDS_KM = [1, 3, 5, 10, 20, 40]  # min sub-route lengths
+TOP_K = 100                     # top-N routes reported per threshold
+MAX_SUBROUTE_KM = 45.0          # safety cap on window enumeration (> max threshold)
+
+# --- M7 approximate sketch sizing (all tunable) ---
+SKETCH_LG_MAX_K = 16            # frequent-items map size = 2^LG (~49k counters)
+CM_HASHES = 5                   # Count-Min depth  (failure prob ~ 2^-5)
+CM_LG_BUCKETS = 17             # Count-Min width per row = 2^17
+# datasketches sketches use a FIXED internal seed (Count-Min default 9001) so
+# they are deterministic AND mergeable across partitions. deserialize() rebuilds
+# with that default, so we must not override it. This constant documents that the
+# sketches are seeded/deterministic; it is not passed to the CMS constructor.
+SKETCH_SEED = 9001             # = datasketches Count-Min default seed
