@@ -444,6 +444,35 @@ memory · scalability · why this over alternatives.**
   explosion in Pregel. Mitigate: prune edges below a frequency floor (a **Bloom
   filter** of "frequent edges" lets us skip rare transitions cheaply), cap beam.
 
+- **M10 — Method C implemented & validated** (`route_mining_graph.py`,
+  `verify_graph.py`). Directed weighted cell-transition graph; **PageRank** (power
+  iteration with DataFrame joins, lineage-truncated — no GraphFrames) for zones;
+  **dominant-flow heavy paths** for routes.
+  - **Route generation (the key design choice):** a first version extended greedily
+    along the *heaviest* edge and produced 'Frankenstein' paths — of 1,121
+    candidates only **24 validated** against real trips. Fix: extend only while the
+    next transition carries ≥ `GRAPH_MIN_FLOW_PROB` (0.4) of the cell's outflow —
+    i.e. follow the **dominant flow** and stop at forks. Validation jumped to
+    **899/1,473**, and every reported route is confirmed by brute-force containment
+    (anti-Frankenstein guarantee). This is graph-*guided* candidate generation
+    (cheap, no O(n²) enumeration), distinct from B's exhaustive windows.
+  - **Results (5k sample):** graph 2,933 nodes / 7,175 edges; frequent edges
+    (≥5) 2,045; **899 validated corridors**; per length ≥1 km top support **120**,
+    ≥3 km top 55 (longest 7.29 km), ≥5 km 9 routes; 50 **activity zones** by
+    PageRank (top zone `8939220…373` @ 41.2385,−8.6695).
+  - **Verified:** route supports re-count exactly (120=120, 55=55); zones have
+    valid H3 geometry, PageRank non-negative & sorted. The verifier also surfaced
+    a real **data-quality signal**: 1 zone ~70 km east of Porto (lon −7.75) — an
+    intermediate-cell drift that Phase-1's start/end bbox never filtered; deferred
+    to M11 anomaly analysis rather than silently dropped.
+  - **How it differs from A & B:** models the *movement network*; its routes are
+    short **very-busy** corridors (top support 120 > B's 46) whereas B's maximal
+    routes trade support for length. Three genuinely different lenses (M16 compares).
+  - **Full-scale note:** frequent-edge list collected to driver for the walks; at
+    1.71M, Pregel/beam on the cluster would replace it. PageRank stays distributed.
+  - **Approx structure available:** a Bloom filter of frequent edges can replace
+    the `w ≥ support` filter for memory; not needed at sample scale (documented).
+
 ### Phase 8 — Evaluation, visualization, defense outputs
 - **Goal:** the comparison the assignment grades on.
 - **Experiments:**

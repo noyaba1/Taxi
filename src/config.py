@@ -84,6 +84,15 @@ LSH_JACCARD_DIST_MAX = 0.3   # approxSimilarityJoin max Jaccard DISTANCE (=1-sim
 CC_MAX_ITER = 15             # label-propagation sweeps for connected components
 CLUSTER_MIN_SIZE = 3         # ignore clusters smaller than this (noise)
 
+# --- M10 transition graph (Method C): PageRank zones + heavy-path routes ---
+GRAPH_MIN_EDGE_SUPPORT = 5   # keep a cell->cell transition only if >= this trips
+PAGERANK_ITERS = 15          # power-iteration sweeps
+PAGERANK_DAMPING = 0.85      # standard damping factor
+GRAPH_MAX_SEEDS = 3000       # top frequent edges used to seed heavy-path walks
+GRAPH_MIN_FLOW_PROB = 0.4    # extend a corridor only while >=40% of a cell's flow
+                             # continues that way (dominant flow); below => fork/hole
+ACTIVITY_ZONES_TOP = 50      # number of activity-zone cells to report
+
 # --- M7 approximate sketch sizing (all tunable) ---
 SKETCH_LG_MAX_K = 16            # frequent-items map size = 2^LG (~49k counters)
 CM_HASHES = 5                   # Count-Min depth  (failure prob ~ 2^-5)
