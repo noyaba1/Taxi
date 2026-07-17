@@ -473,6 +473,19 @@ memory · scalability · why this over alternatives.**
   - **Approx structure available:** a Bloom filter of frequent edges can replace
     the `w ≥ support` filter for memory; not needed at sample scale (documented).
 
+### Anomalous routes — M11 (`anomaly_analysis.py`, `verify_anomaly.py`)
+The assignment's "identify anomalous routes" objective. Five independent detectors
+over the Phase-2 feature table (no recompute), combined into an `anomaly_score`:
+`a_speed` (teleport/too-fast), `a_idle`, `a_distance` (> p99), `a_shape`
+(sinuosity > p99), `a_drift` (route bbox escapes the metro — the M10 zone finding).
+- **Bug caught by the verifier:** the p99 fence via `approxQuantile(relErr=0.01)`
+  returned ≈ max on the heavy distance tail (error ≈ 49 ranks) → flagged nothing.
+  Fixed with `relErr=0.001` and a fence computed on the non-speed-anomaly subset
+  (outliers must not set their own threshold). p99 dropped 399.7 km → 20.8 km.
+- **Results (5k sample):** a_speed 2.12%, a_distance 1.31%, a_shape 1.11%, a_idle
+  0.16%, a_drift 0.10%; **4.11% any anomaly, 26 trips ≥2 detectors.** Verified
+  self-consistent (score == Σ detectors; each detector's semantics hold).
+
 ### Phase 8 — Evaluation, visualization, defense outputs
 - **Goal:** the comparison the assignment grades on.
 - **Experiments:**

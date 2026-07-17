@@ -93,6 +93,10 @@ GRAPH_MIN_FLOW_PROB = 0.4    # extend a corridor only while >=40% of a cell's fl
                              # continues that way (dominant flow); below => fork/hole
 ACTIVITY_ZONES_TOP = 50      # number of activity-zone cells to report
 
+# --- M11 anomalous-route analysis ---
+ANOMALY_PCT = 0.99           # percentile fence for statistical outliers
+ANOMALY_METRO_MARGIN = 0.05  # deg beyond metro bbox before a route counts as drift
+
 # --- M7 approximate sketch sizing (all tunable) ---
 SKETCH_LG_MAX_K = 16            # frequent-items map size = 2^LG (~49k counters)
 CM_HASHES = 5                   # Count-Min depth  (failure prob ~ 2^-5)
