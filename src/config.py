@@ -75,6 +75,15 @@ MAX_SUBROUTE_KM = 45.0          # safety cap on window enumeration (> max thresh
 SUPPORT_X_PCT = 0.5                       # default min-support, percent of trips
 SUPPORT_X_PCT_SWEEP = [0.2, 0.5, 1.0, 2.0]  # experiment values (PDF asks us to)
 
+# --- M9 clustering (Method A): MinHash-LSH on directed bigram shingles ---
+LSH_NUM_FEATURES = 1 << 18   # HashingTF dimensionality for shingles
+LSH_NUM_HASH_TABLES = 5      # MinHashLSH hash tables (more -> better recall)
+LSH_JACCARD_DIST_MAX = 0.3   # approxSimilarityJoin max Jaccard DISTANCE (=1-sim);
+                             # 0.3 => similarity >= 0.7 (trips must share most of
+                             # their transitions -> same corridor; looser explodes)
+CC_MAX_ITER = 15             # label-propagation sweeps for connected components
+CLUSTER_MIN_SIZE = 3         # ignore clusters smaller than this (noise)
+
 # --- M7 approximate sketch sizing (all tunable) ---
 SKETCH_LG_MAX_K = 16            # frequent-items map size = 2^LG (~49k counters)
 CM_HASHES = 5                   # Count-Min depth  (failure prob ~ 2^-5)

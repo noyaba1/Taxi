@@ -397,6 +397,35 @@ memory · scalability · why this over alternatives.**
 - **Bottleneck:** LSH bucket skew (dense areas) + GraphFrames iteration
   communication. Mitigate with bucket-size caps and bounded iterations.
 
+- **M9 — Method A implemented & validated** (`route_mining_clustering.py`,
+  `verify_clustering.py`). Pipeline: directed **bigram shingles** → `HashingTF`
+  (binary) → MLlib **MinHashLSH** `approxSimilarityJoin` (Jaccard dist ≤ 0.3 ⇒
+  similarity ≥ 0.7) → cluster → seed representative. No GraphFrames (its Windows
+  setup cost isn't worth it here; the graph after LSH pruning is small).
+  - **Bug found & fixed by the verifier (important):** the first version used
+    **connected-components** (iterative label propagation). The coherence check
+    exposed a **chained blob** — a "137-trip" cluster whose representative was
+    similar to only **3** members (coherence 0.02), exactly the single-linkage
+    chaining DESIGN_REVIEW #2 predicted. Fix: replaced CC with **greedy star
+    (canopy) clustering** — each cluster is a high-degree seed + trips *directly*
+    similar to it, so membership can't chain. Re-verified coherence ≈ **1.0**.
+  - **Also fixed:** the LSH threshold was far too loose (0.55 dist) and OOM'd the
+    self-join; tightened to 0.3 with `localCheckpoint`-style lineage discipline.
+  - **Results (5k sample):** 4,815 trips → 2,451 similarity edges → **183 coherent
+    clusters**; top corridor 28 similar trips (rep 6.14 km); 4 clusters ≥ 10 km
+    (rep 10.87 km). Verified: 0 structural violations; coherence ≥ 0.5 (actually
+    ~1.0) on the top clusters.
+  - **Design-review fixes honored:** bigram shingles (order+direction, not raw cell
+    set); no giant blob (star clustering not CC). **KEEP** MinHashLSH (the required
+    approximate structure here).
+  - **How it differs from Method B:** B mines frequent sub-route *strings*; A groups
+    *whole trajectories* by similarity and reads off corridors — so A's "popularity"
+    is cluster size, B's is sub-route support. The M16 comparison quantifies their
+    overlap.
+  - **Full-scale note:** the pruned edge list is collected to the driver (capped at
+    `EDGE_COLLECT_CAP`); at 1.71M a distributed community detection (GraphFrames
+    LPA/Louvain) would replace the driver-side step. Documented, not yet needed.
+
 ### Phase 7 — Method C (original): transition-graph heavy-path mining + sketches
 - **Goal:** a third method that is **neither clustering nor suffix-based**.
 - **Idea:** build a **directed weighted graph** where nodes = H3 cells and edges
