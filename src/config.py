@@ -67,6 +67,14 @@ ROUTE_LENGTH_THRESHOLDS_KM = [1, 3, 5, 10, 20, 40]  # min sub-route lengths
 TOP_K = 100                     # top-N routes reported per threshold
 MAX_SUBROUTE_KM = 45.0          # safety cap on window enumeration (> max threshold)
 
+# --- M8 min-support X% + maximal ("popular long sub-route" per the PDF) ---
+# A sub-route is "popular" if >= X% of trips traversed it; we then keep the
+# MAXIMAL such routes (extend-and-still-frequent is impossible) => this maximises
+# length subject to support >= X%, and produces the "holes" where traffic forks.
+# X must be small on the 5k sample (sparse); it grows meaningful on the full data.
+SUPPORT_X_PCT = 0.5                       # default min-support, percent of trips
+SUPPORT_X_PCT_SWEEP = [0.2, 0.5, 1.0, 2.0]  # experiment values (PDF asks us to)
+
 # --- M7 approximate sketch sizing (all tunable) ---
 SKETCH_LG_MAX_K = 16            # frequent-items map size = 2^LG (~49k counters)
 CM_HASHES = 5                   # Count-Min depth  (failure prob ~ 2^-5)

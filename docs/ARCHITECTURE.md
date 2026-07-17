@@ -178,7 +178,13 @@ memory · scalability · why this over alternatives.**
   cell-center Haversines) so any window's km-length is O(1) — accurate, not the
   crude "k cells × 0.174 km".
 - **Distributed:** pure per-trip `pandas_udf` (H3 calls vectorized per batch);
-  no shuffle. Output `cell_seq: array<long>`, `cum_km: array<double>`.
+  no shuffle. **Actual output columns:** `h3_seq_raw`/`h3_seq_compact`
+  (`array<string>` hex cells), `n_cells_raw`, `n_cells_compact`,
+  `compression_ratio`, `encoded_len_km`. *Not yet stored:* a per-trip cumulative
+  `cum_km: array<double>` and `int64` cell IDs — planned for **M8.1
+  (scale-hardening)** so mining can drop the in-UDF H3 distance recompute and
+  shrink shuffle keys. (This corrects an earlier aspirational note that listed
+  `cell_seq: array<long>`/`cum_km` as if already produced.)
 
 ### Phase 5 — Method B: suffix/n-gram frequent sub-routes
 - **Goal:** count frequent contiguous sub-routes; top-100 per length threshold.
@@ -339,6 +345,38 @@ memory · scalability · why this over alternatives.**
     sparsity, provable by the identical 0.00 in the exact top-100 ties; (5) sketches
     turn skew from a liability (reducer stragglers) into an asset (tight bounds on
     hot keys).
+
+- **M8 — MIN-SUPPORT X% + MAXIMAL, the PDF's literal definition, implemented &
+  validated** (`route_mining_maximal.py`, `verify_maximal.py`).
+  - **Why it exists:** the PDF defines a popular long sub-route as *"≥ X% of trips
+    traversed it, while maximising its length"*, and its Haifa→Ashdod example shows
+    a corridor breaking into **contiguous pieces with holes** where traffic
+    diverges. M5 (top-k by raw support) is a proxy; **M8 is the definition.**
+  - **Criterion:** keep a contiguous sub-route iff `support ≥ min_sup`
+    (`= ceil(X%·n_trips)`) **and** its best single-cell extension `< min_sup`.
+    Since support is monotonic, "maximal among frequent" = the longest stretch
+    still clearing X% → exactly "maximise length subject to ≥ X%". Reuses M6's
+    parent-key extension machinery + the shared support table; `SUPPORT_X_PCT`
+    and the sweep live in `config.py` (PDF asks us to experiment with X).
+  - **The holes fall out for free:** a maximal-frequent route terminates precisely
+    where its continuations each drop below X% — i.e. a **fork**. So one popular
+    corridor = a *collection* of contiguous sub-routes with holes at the forks.
+  - **Difference from M5/M6:** M5 = top-k by raw support (proxy); M6 = closed (no
+    EQUAL-support extension, no X% floor); **M8 = frequent(≥X%) ∧ maximal** (PDF).
+  - **Results (5k sample, X = 0.5% → min_sup 25):** 810,933 sub-routes → **314
+    maximal-frequent**; per length ≥1 km 314 routes / top support 46 / longest
+    3.95 km; ≥3 km 31 routes / longest 5.41 km; ≥5 km 2 routes; ≥10 km none.
+    Sweep: X = 0.2% (min_sup 10) → 1,039 routes, longest 6.52 km (lower X ⇒ longer
+    frequent routes). **Holes demo:** top route (support 46) forks into branches of
+    24 and 20 trips — each below min_sup 25 — so it terminates and a hole forms.
+  - **Verified (independently):** brute-force containment == reported support;
+    support ≥ min_sup; best left/right extension (counted by `regexp_extract` over
+    trips, independent of the aggregate) < min_sup; the top route's forks each
+    < min_sup (genuine hole). All PASSED.
+  - **Sample-sparsity caveat:** on 5k trips X must be small (0.2–0.5%) and long
+    (≥10 km) maximal-frequent routes are absent; on the full 1.71M dataset X
+    becomes meaningfully larger and long corridors appear. This is the
+    canonical Method-B output that A (Phase 6) and C (Phase 7) will be compared to.
 
 ### Phase 6 — Method A: clustering-based route discovery
 - **Goal:** group similar whole routes; cluster representatives = popular routes.
