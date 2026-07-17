@@ -23,6 +23,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_BASE = os.environ.get("DATA_BASE", str(PROJECT_ROOT / "data"))
 OUTPUT_BASE = os.environ.get("OUTPUT_BASE", str(PROJECT_ROOT / "outputs"))
 
+
+def storage_join(base, *parts):
+    """
+    Join storage paths with '/', PRESERVING a URI scheme like gs://.
+    pathlib.Path collapses the double slash ('gs://b' -> 'gs:/b'), which would
+    break every GCS path when DATA_BASE='gs://bucket/...'. Local backslash bases
+    still work because Windows/Spark accept forward slashes.
+    """
+    return "/".join([str(base).rstrip("/"), *parts])
+
 # Raw inputs (the lecturer's files).
 # NOTE: the full dataset physically lives at  train.csv/train.csv
 RAW_TRAIN = os.environ.get(
@@ -30,9 +40,9 @@ RAW_TRAIN = os.environ.get(
 )
 RAW_TEST = str(PROJECT_ROOT / "Porto_taxi_data_test_partial_trajectories.csv")
 
-# Working datasets
-SAMPLE_CSV = str(Path(DATA_BASE) / "sample" / "train_sample.csv")
-CLEAN_PARQUET = str(Path(DATA_BASE) / "processed" / "trips_clean.parquet")
+# Working datasets (gs://-safe joins so the cloud switch actually works)
+SAMPLE_CSV = storage_join(DATA_BASE, "sample", "train_sample.csv")
+CLEAN_PARQUET = storage_join(DATA_BASE, "processed", "trips_clean.parquet")
 
 # ------------------------------------------------------------------
 # 2. DATASET CONSTANTS
