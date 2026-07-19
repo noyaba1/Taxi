@@ -32,8 +32,8 @@ gsutil mb -l $REGION $BUCKET        # once
 ## 2. Upload the data + code
 
 ```bash
-# raw data (once): the ~1.9 GB file
-gsutil -m cp "train.csv/train.csv" $BUCKET/porto/train.csv/train.csv
+# raw data (once): the ~1.9 GB file, to a clean path
+gsutil -m cp "train.csv/train.csv" $BUCKET/porto/raw/train.csv
 # code: zip the src package so jobs can import it
 cd <repo> && zip -r src.zip src -x "*/__pycache__/*"
 gsutil cp src.zip $BUCKET/code/src.zip
@@ -59,14 +59,18 @@ deletes it so a forgotten cluster can't drain the $50.
 Each stage reads Parquet from the previous one. Submit in order (see
 `scripts/dataproc_submit.sh` for a loop):
 
+`clean_data` needs **`RAW_TRAIN`** too (else it reads the local default path and
+fails). Pass it on both the driver (appMasterEnv) and executors:
+
 ```bash
+D=$BUCKET/porto
+E=spark.yarn.appMasterEnv; X=spark.executorEnv
+PROPS="$E.SPARK_ENV=cloud,$E.DATA_BASE=$D,$E.RAW_TRAIN=$D/raw/train.csv,\
+$E.OUTPUT_BASE=/tmp/porto_out,$X.SPARK_ENV=cloud,$X.DATA_BASE=$D,$X.RAW_TRAIN=$D/raw/train.csv"
 submit () {  # $1 = module file under src/
   gcloud dataproc jobs submit pyspark src/$1 \
     --cluster porto --region $REGION \
-    --py-files $BUCKET/code/src.zip \
-    --properties spark.yarn.appMasterEnv.SPARK_ENV=cloud,\
-spark.yarn.appMasterEnv.DATA_BASE=$BUCKET/porto,\
-spark.executorEnv.SPARK_ENV=cloud,spark.executorEnv.DATA_BASE=$BUCKET/porto \
+    --py-files $BUCKET/code/src.zip --properties "$PROPS" \
     -- --full
 }
 submit clean_data.py
@@ -80,11 +84,21 @@ submit route_mining_exact.py        # exact + approx comparison (M5/M7)
 submit route_mining_approx.py
 ```
 
-Parquet outputs land in `$BUCKET/porto/processed/`. The small `.md`/`.csv`
-reports are written to the **driver** local disk; copy them up:
-`gsutil -m cp -r /tmp/outputs $BUCKET/porto/outputs` (or set `OUTPUT_BASE=$BUCKET/...`
-for the CSV route files, which Spark-free `open()` cannot write to gs:// — keep
-those local and `gsutil cp`).
+**Where the results are.** Parquet tables (silver/gold) land in
+`$BUCKET/porto/processed/` (Spark writes gs:// natively). The small top-100
+route/zone/anomaly **CSVs and `.md` reports** are written via plain `open()` to the
+**driver's** local `OUTPUT_BASE=/tmp/porto_out` — *and every stage also PRINTS its
+result tables to stdout*, which Dataproc captures to the job's **driver output on
+GCS** automatically. So you can read all headline numbers from the job output
+without retrieving files.
+
+To also fetch the CSV files, copy them off the master after the run:
+```bash
+gcloud compute ssh porto-m --zone $REGION-b --command \
+  "gsutil -m cp -r /tmp/porto_out gs://<bucket>/porto/outputs"
+```
+(Or regenerate the CSVs locally by pointing the mining stages at the downloaded
+encoded Parquet.)
 
 ## 5. Delete the cluster (do this the moment you finish)
 
