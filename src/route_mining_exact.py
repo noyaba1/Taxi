@@ -97,7 +97,7 @@ def main(use_sample: bool) -> None:
     res = config.H3_RESOLUTION
     enc_path = config.CLEAN_PARQUET.replace(
         ".parquet", f"_encoded_r{res}_sample.parquet" if use_sample
-        else f"_encoded_r{res}.parquet")
+        else f"_encoded_r{res}_full.parquet")
     enc = spark.read.parquet(enc_path).select("TRIP_ID", "h3_seq_compact")
     n_trips = enc.count()
 

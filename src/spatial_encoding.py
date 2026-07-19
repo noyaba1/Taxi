@@ -144,7 +144,7 @@ def main(use_sample: bool) -> None:
 
     out = config.CLEAN_PARQUET.replace(
         ".parquet", f"_encoded_r{res}_sample.parquet" if use_sample
-        else f"_encoded_r{res}.parquet")
+        else f"_encoded_r{res}_full.parquet")   # must match the miners' readers
     enc.write.mode("overwrite").parquet(out)
     print(f"[encode] wrote -> {out}")
 

@@ -44,7 +44,7 @@ def main(use_sample: bool) -> None:
 
     enc_path = config.CLEAN_PARQUET.replace(
         ".parquet", f"_encoded_r{res}_sample.parquet" if use_sample
-        else f"_encoded_r{res}.parquet")
+        else f"_encoded_r{res}_full.parquet")
     feat_path = config.CLEAN_PARQUET.replace(
         ".parquet", "_features_sample.parquet" if use_sample else "_features.parquet")
 
