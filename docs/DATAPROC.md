@@ -47,9 +47,15 @@ gcloud dataproc clusters create porto \
   --master-machine-type n2-standard-4 --num-masters 1 \
   --worker-machine-type n2-standard-4 --num-workers 4 \
   --image-version 2.1-debian12 \
-  --max-idle 30m \                # AUTO-DELETE if idle -> protects the budget
-  --properties spark:spark.sql.adaptive.enabled=true
+  --max-idle 30m \
+  --initialization-actions gs://goog-dataproc-initialization-actions-$REGION/python/pip-install.sh \
+  --metadata PIP_PACKAGES="h3==3.7.7 datasketches==5.0.2" \
+  --properties spark:spark.sql.adaptive.enabled=true,spark:spark.sql.shuffle.partitions=200
 ```
+
+`--max-idle` auto-deletes an idle cluster (protects the budget). The init action
+installs **h3 + datasketches** on every node — the pipeline imports them and a
+stock image does not have them (numpy/pandas/pyarrow are already present).
 
 1 master + 4 workers = **5 machines** in one Spark cluster. `--max-idle` auto-
 deletes it so a forgotten cluster can't drain the $50.

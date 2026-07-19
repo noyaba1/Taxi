@@ -24,10 +24,14 @@ gsutil cp src.zip "$BUCKET/code/src.zip"
 gsutil -q stat "$DATA/raw/train.csv" || gsutil -m cp "train.csv/train.csv" "$DATA/raw/train.csv"
 
 echo "== create 5-machine cluster (1 master + 4 workers) =="
+# h3 + datasketches are NOT on a stock DataProc image; install on every node.
+# (numpy/pandas/pyarrow ARE preinstalled on 2.1, so pandas_udf works.)
 gcloud dataproc clusters create "$CLUSTER" --region "$REGION" \
   --master-machine-type n2-standard-4 --num-masters 1 \
   --worker-machine-type n2-standard-4 --num-workers 4 \
   --image-version 2.1-debian12 --max-idle 30m \
+  --initialization-actions "gs://goog-dataproc-initialization-actions-$REGION/python/pip-install.sh" \
+  --metadata PIP_PACKAGES="h3==3.7.7 datasketches==5.0.2" \
   --properties spark:spark.sql.adaptive.enabled=true,spark:spark.sql.shuffle.partitions=200
 
 # auto-delete the cluster on ANY exit (success, failure, Ctrl-C) -> budget-safe

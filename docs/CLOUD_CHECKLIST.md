@@ -55,6 +55,8 @@ gcloud dataproc clusters create porto --region "$REGION" \
   --master-machine-type n2-standard-4 --num-masters 1 \
   --worker-machine-type n2-standard-4 --num-workers 4 \
   --image-version 2.1-debian12 --max-idle 30m \
+  --initialization-actions gs://goog-dataproc-initialization-actions-$REGION/python/pip-install.sh \
+  --metadata PIP_PACKAGES="h3==3.7.7 datasketches==5.0.2" \
   --properties spark:spark.sql.adaptive.enabled=true,spark:spark.sql.shuffle.partitions=200
 
 D=$BUCKET/porto; E=spark.yarn.appMasterEnv; X=spark.executorEnv
