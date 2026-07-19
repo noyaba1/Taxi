@@ -68,7 +68,10 @@ H3_RESOLUTION = 9       # ~174 m edge hexagons - justified in README Phase 4
 # ------------------------------------------------------------------
 # 4. SPARK TUNING (local). DataProc overrides these via cluster config.
 # ------------------------------------------------------------------
-LOCAL_SHUFFLE_PARTITIONS = 16   # small for a laptop; DataProc uses ~200+
+# Env-overridable so a bigger local (dry-)run can use more memory/partitions
+# without code changes; DataProc ignores these (cluster mode sets its own).
+LOCAL_SHUFFLE_PARTITIONS = int(os.environ.get("SPARK_SHUFFLE_PARTS", "16"))
+LOCAL_DRIVER_MEM = os.environ.get("SPARK_DRIVER_MEM", "4g")
 
 # ------------------------------------------------------------------
 # 5. ROUTE MINING (Phase 5 / M5-M7) - single source of truth
@@ -91,6 +94,12 @@ LSH_NUM_HASH_TABLES = 5      # MinHashLSH hash tables (more -> better recall)
 LSH_JACCARD_DIST_MAX = 0.3   # approxSimilarityJoin max Jaccard DISTANCE (=1-sim);
                              # 0.3 => similarity >= 0.7 (trips must share most of
                              # their transitions -> same corridor; looser explodes)
+# The LSH self-join grows ~quadratically AND suffers bucket skew as #trips rises
+# (dry run: 50k = 243k edges, stable in ~90s; 100k = LSH bucket skew, worker
+# timeout). So we cluster a REPRESENTATIVE sample bounded to a size proven stable.
+# Popular corridors are frequent, hence well-represented in any large sample, so
+# capping does not lose them. DataProc can raise this via the env var.
+CLUSTERING_MAX_TRIPS = int(os.environ.get("CLUSTERING_MAX_TRIPS", "50000"))
 CC_MAX_ITER = 15             # label-propagation sweeps for connected components
 CLUSTER_MIN_SIZE = 3         # ignore clusters smaller than this (noise)
 

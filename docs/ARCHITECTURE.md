@@ -52,7 +52,7 @@ schema-on-read). Nothing recomputes upstream work.
  trips_features.parquet                             ── Gold-features (Phase 2)
    │  spatial_encoding.py (H3 cell sequences, denoised)
    ▼
- trips_encoded.parquet  (TRIP_ID, cell_seq[], cum_km[])   (Phase 4)
+ trips_encoded.parquet  (TRIP_ID, h3_seq_compact[], encoded_len_km)  (Phase 4)
    │            ├──────────────┬───────────────┐
    ▼            ▼              ▼               ▼
  routes_suffix  routes_cluster routes_graph   stats/  (Phases 3,5,6,7)
@@ -180,11 +180,11 @@ memory · scalability · why this over alternatives.**
 - **Distributed:** pure per-trip `pandas_udf` (H3 calls vectorized per batch);
   no shuffle. **Actual output columns:** `h3_seq_raw`/`h3_seq_compact`
   (`array<string>` hex cells), `n_cells_raw`, `n_cells_compact`,
-  `compression_ratio`, `encoded_len_km`. *Not yet stored:* a per-trip cumulative
-  `cum_km: array<double>` and `int64` cell IDs — planned for **M8.1
-  (scale-hardening)** so mining can drop the in-UDF H3 distance recompute and
-  shrink shuffle keys. (This corrects an earlier aspirational note that listed
-  `cell_seq: array<long>`/`cum_km` as if already produced.)
+  `compression_ratio`, `encoded_len_km`. *Not stored:* a per-trip cumulative
+  `cum_km: array<double>` and `int64` cell IDs — **deferred** (rejected as
+  premature on the sample; would let mining drop the in-UDF H3 recompute and
+  shrink shuffle keys). Documented as a scale-hardening step in
+  `docs/DATAPROC.md` §8, to apply and measure before the full/cloud run.
 
 ### Phase 5 — Method B: suffix/n-gram frequent sub-routes
 - **Goal:** count frequent contiguous sub-routes; top-100 per length threshold.

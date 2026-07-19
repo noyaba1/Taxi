@@ -89,6 +89,13 @@ def main(use_sample: bool) -> None:
              .filter(F.size("h3_seq_compact") >= 2)
              .withColumn("nid", F.monotonically_increasing_id())).cache()
     n_trips = trips.count()
+    # Bound the LSH self-join: its edge count grows ~quadratically with #trips, so
+    # on the full dataset we cluster a representative sample (corridors still hold).
+    if n_trips > config.CLUSTERING_MAX_TRIPS:
+        trips = trips.sample(config.CLUSTERING_MAX_TRIPS / n_trips, seed=42).cache()
+        sampled = trips.count()
+        print(f"[m9] clustering a representative sample: {sampled:,} of {n_trips:,} trips")
+        n_trips = sampled
 
     # ---- 1-2. shingles -> hashed binary features ----
     feats = trips.withColumn("shingles", bigram_shingles("h3_seq_compact")) \

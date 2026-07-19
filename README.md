@@ -26,20 +26,27 @@ DAY_TYPE, MISSING_DATA, POLYLINE`.
 
 ## Roadmap (phases)
 
-| Phase | File(s) | Goal |
-|-------|---------|------|
-| 0 | `requirements.txt`, this README | Environment + Java + Spark working locally |
-| 1 ✅ | `make_sample.py`, `load_data.py`, `clean_data.py` | Parse POLYLINE, clean, write Parquet |
-| 2 | `feature_engineering.py` | Distance (haversine), avg speed, bbox, anomaly flags |
-| 3 | `eda.py` / notebook | Statistics + exploratory analysis (small outputs only) |
-| 4 | `spatial_encoding.py` | H3 vs Geohash vs S2 → encode trajectories to cell sequences |
-| 5 | `route_mining_suffix.py` | Frequent sub-routes via suffix-array / n-gram counting |
-| 6 | `route_mining_clustering.py` | Clustering-based popular-route discovery |
-| 7 | `route_mining_approx.py` | Original 3rd method + Count-Min / HLL / LSH / Bloom |
-| 8 | `evaluation.py`, `visualization.py` | Runtime/memory/accuracy comparison, maps, final summary |
+**All phases below are implemented and validated on the 5k sample** (each stage
+has an independent `verify_*.py`). The full/DataProc run is the remaining step.
+Authoritative detail: `docs/FINAL_REPORT.md`; design: `docs/ARCHITECTURE.md`.
+
+| Phase | File(s) | Goal | State |
+|-------|---------|------|-------|
+| 0 | `requirements.txt`, `SETUP.md` | Environment + Java 11 + Spark 3.5.1 | ✅ |
+| 1 | `load_data.py`, `clean_data.py` (+`verify_phase1`) | Parse POLYLINE, clean, Parquet | ✅ |
+| 2 | `feature_engineering.py`, `summarize_features.py` | Distance/speed/bbox/anomaly, stats | ✅ |
+| 4 | `spatial_encoding.py` (+`verify_encoding`) | H3 res-9 encoding + resolution sweep | ✅ |
+| 5-B | `route_mining_{exact,suffix,approx,maximal}.py` | Method B: exact / closed / approx / **min-support X% + maximal** | ✅ |
+| 6-A | `route_mining_clustering.py` | Method A: MinHash-LSH + star clustering | ✅ |
+| 7-C | `route_mining_graph.py` | Method C (original): transition graph + **activity zones** | ✅ |
+| — | `anomaly_analysis.py` | Anomalous routes (5 detectors) | ✅ |
+| 8 | `evaluation.py`, `visualization.py`, notebook | A/B/C comparison, map, Colab demo | ✅ |
+| Ops | `run_pipeline.py`, `tests/`, `scripts/dataproc_submit.sh` | Orchestrator, unit tests, cloud deploy | ✅ |
+| Cloud | `docs/DATAPROC.md` | Full 1.71M run on DataProc (5 machines) + GCS | ⏳ pending |
 
 **Target deliverable:** top-100 popular long sub-routes for min lengths
-{1, 3, 5, 10, 20, 40} km, with runtime/memory/accuracy comparison across methods.
+{1, 3, 5, 10, 20, 40} km, via 3 methods (A/B/C) + approximate structures, with
+runtime/memory/accuracy comparison, activity zones, anomalies, and a map.
 
 ---
 

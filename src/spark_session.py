@@ -97,7 +97,7 @@ def get_spark(app_name: str = "porto-taxi", shuffle_parts: int | None = None) ->
         builder = (
             builder.master("local[*]")
             # Give the local JVM room; lower if your laptop has < 8GB free.
-            .config("spark.driver.memory", "4g")
+            .config("spark.driver.memory", config.LOCAL_DRIVER_MEM)
             # Fewer shuffle partitions -> less overhead on a single machine.
             .config(
                 "spark.sql.shuffle.partitions",

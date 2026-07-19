@@ -70,20 +70,37 @@ def _build_partition_sketches(rows):
     yield pickle.dumps({"ss": [s.serialize() for s in ss], "cm": cm.serialize()})
 
 
+def _merge_bundles(b1, b2):
+    """Merge two serialized sketch bundles (runs on executors via treeReduce)."""
+    import datasketches as ds
+    d1, d2 = pickle.loads(b1), pickle.loads(b2)
+    ss = []
+    for i in range(len(THRESHOLDS)):
+        s = ds.frequent_strings_sketch.deserialize(d1["ss"][i])
+        s.merge(ds.frequent_strings_sketch.deserialize(d2["ss"][i]))
+        ss.append(s.serialize())
+    cm = ds.count_min_sketch.deserialize(d1["cm"])
+    cm.merge(ds.count_min_sketch.deserialize(d2["cm"]))
+    return pickle.dumps({"ss": ss, "cm": cm.serialize()})
+
+
 def build_sketches(windows_df):
-    """Distributed build+merge. Returns (ss_list, cm, n_partitions, merge_records)."""
+    """
+    Distributed build + MERGE-ON-EXECUTORS. Returns (ss_list, cm, n_parts, n_parts).
+    We use treeReduce (not collect): each partition builds a small bundle and the
+    bundles are merged pairwise across executors, so the driver receives only ONE
+    final (capacity-bounded ~65 MB) bundle -- no matter how many partitions or how
+    big the data. Collecting all partition bundles blows spark.driver.maxResultSize
+    at scale (found in the 50k dry run: 13 x ~80 MB > 1 GB).
+    """
     import datasketches as ds
     rdd = windows_df.select("subroute", "length_km").rdd
     n_parts = rdd.getNumPartitions()
-    blobs = rdd.mapPartitions(_build_partition_sketches).collect()
-    ss = [ds.frequent_strings_sketch(LG) for _ in THRESHOLDS]
-    cm = _new_cm(ds)
-    for blob in blobs:
-        d = pickle.loads(blob)
-        for i in range(len(THRESHOLDS)):
-            ss[i].merge(ds.frequent_strings_sketch.deserialize(d["ss"][i]))
-        cm.merge(ds.count_min_sketch.deserialize(d["cm"]))
-    return ss, cm, n_parts, len(blobs)
+    final = rdd.mapPartitions(_build_partition_sketches).treeReduce(_merge_bundles)
+    d = pickle.loads(final)
+    ss = [ds.frequent_strings_sketch.deserialize(x) for x in d["ss"]]
+    cm = ds.count_min_sketch.deserialize(d["cm"])
+    return ss, cm, n_parts, n_parts
 
 
 def approx_topk(ss):
