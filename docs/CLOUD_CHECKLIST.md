@@ -1,4 +1,9 @@
-# DataProc Execution Checklist (copy-paste runbook)
+# DataProc Execution Checklist (condensed copy-paste runbook)
+
+> **Superseded by [`CLOUD_RUN_PLAYBOOK.md`](CLOUD_RUN_PLAYBOOK.md)** — that is the
+> canonical, step-by-step execution runbook (20 steps with per-step expected
+> output, runtime, success/failure, and recovery). Keep this file as a quick
+> copy-paste condensed version; if the two ever differ, the playbook wins.
 
 Run top to bottom. Fill the three variables once; every command after that is
 literal. Rationale and options are in `docs/DATAPROC.md`; this file is the
