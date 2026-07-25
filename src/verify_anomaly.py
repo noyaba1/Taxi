@@ -12,7 +12,6 @@ Checks the anomaly detectors are internally consistent and semantically correct.
 Run:
     python -m src.verify_anomaly --sample
 """
-import csv
 
 from pyspark.sql import functions as F
 
@@ -59,8 +58,7 @@ def main(scale: str) -> None:
 
     # 5. exported CSV self-consistency
     apath = storage.out_path("routes", f"anomalies_top50_{scale}.csv")
-    with open(apath, newline="", encoding="utf-8") as fh:
-        rows = list(csv.DictReader(fh))
+    rows = storage.read_csv_rows(apath)
     bad_csv = sum(1 for r in rows
                   if int(r["anomaly_score"]) != sum(1 for c in DETECTORS if str(r[c]).lower() == "true")
                   or int(r["anomaly_score"]) < 1)

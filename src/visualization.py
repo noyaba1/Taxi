@@ -71,6 +71,11 @@ def _add_routes(m, rows, route_col, colour, name, min_len, top_n=25):
 
 
 def main(scale: str) -> None:
+    with cli.session_if_remote("visualization"):
+        _main(scale)
+
+
+def _main(scale: str) -> None:
     m = folium.Map(location=PORTO_CENTER, zoom_start=12, tiles="cartodbpositron")
     total = 0
 

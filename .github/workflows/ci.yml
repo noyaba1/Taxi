@@ -65,6 +65,30 @@ jobs:
           print("all modules import cleanly")
           PY
 
+      # DataProc ships the code as a zip on PYTHONPATH, not as a source tree.
+      # A missing __init__.py or a path-relative import works locally and fails
+      # only on the cluster.
+      - name: Code imports when packaged the way DataProc ships it
+        run: |
+          zip -qr /tmp/src.zip src -x "*/__pycache__/*"
+          mkdir -p /tmp/pkgtest && cd /tmp/pkgtest
+          python - <<'PY'
+          import importlib, pkgutil, sys, zipfile
+          sys.path.insert(0, '/tmp/src.zip')
+          assert 'src/__init__.py' in zipfile.ZipFile('/tmp/src.zip').namelist(), \
+              'src.zip has no __init__.py -- it is not an importable package'
+          import src
+          bad = []
+          for m in pkgutil.iter_modules(src.__path__):
+              try:
+                  importlib.import_module(f'src.{m.name}')
+              except Exception as exc:
+                  bad.append(f'src.{m.name}: {type(exc).__name__}: {exc}')
+          if bad:
+              print('\n'.join(bad)); sys.exit(1)
+          print('every module imports from the zip')
+          PY
+
       - name: Pipeline stage lists are consistent with the cloud script
         run: |
           python - <<'PY'

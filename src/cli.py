@@ -121,6 +121,35 @@ def stage(name: str, scale: str, log: logging.Logger | None = None):
             log.warning("could not record timings: %s", exc)
 
 
+@contextlib.contextmanager
+def session_if_remote(app_name: str):
+    """
+    Start Spark only when the outputs live behind a URI scheme.
+
+    Most stages need Spark anyway. `evaluation` and `visualization` do not --
+    they post-process small CSVs with pandas/folium. But `src.storage` reaches a
+    gs:// path through the JVM's Hadoop FileSystem, and that needs a live
+    SparkSession to borrow the JVM from. Locally (a plain path) they stay fast
+    with no JVM at all; on DataProc they get the session they need.
+
+    This was found by running the whole pipeline against file:// paths, which
+    take the identical code path to gs://. Both stages failed there and would
+    have failed on the cluster -- after the expensive mining had already run.
+    """
+    from src import storage
+
+    if not storage.is_remote(storage.out_path("x")):
+        yield None
+        return
+    from src.spark_session import get_spark
+
+    spark = get_spark(app_name)
+    try:
+        yield spark
+    finally:
+        spark.stop()
+
+
 def paths_for(args, resolution: int | None = None) -> dict:
     """Convenience: parsed args -> the dataset path bundle for that scale."""
     return config.dataset_paths(scale_of(args), resolution)

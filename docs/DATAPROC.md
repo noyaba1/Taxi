@@ -31,7 +31,22 @@ when the path has a URI scheme.
 
 ---
 
-## Step 0 — dry run (free, do this first)
+## Step 0a — local dress rehearsal (free, offline, ~4 min)
+
+```bash
+bash scripts/cloud_rehearsal.sh
+```
+
+Runs the whole pipeline with `DATA_BASE`/`OUTPUT_BASE` behind a `file://` URI.
+That is a real Hadoop FileSystem with a URI scheme, so it exercises the *same*
+code path as `gs://` — without credentials, a bucket, or a cent.
+
+Not hypothetical: the first run of this found three blockers that local testing
+could never surface — `evaluation` and `visualization` had no SparkSession to
+reach a remote path with (both produce deliverables), `verify_anomaly` read its
+CSV with a bare `open()`, and `validate_holdout`'s input was never uploaded.
+
+## Step 0b — dry run (free, do this first)
 
 ```bash
 PROJECT=my-project BUCKET=gs://my-bucket DRY_RUN=1 bash scripts/dataproc_submit.sh

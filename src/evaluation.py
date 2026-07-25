@@ -134,6 +134,11 @@ def _interpret(dsets, overlaps, present):
 
 
 def main(scale: str) -> None:
+    with cli.session_if_remote("evaluation"):
+        _main(scale)
+
+
+def _main(scale: str) -> None:
     methods = {m: _load(m, scale) for m in METHODS}
     present = [m for m, v in methods.items() if v]
     if not present:
