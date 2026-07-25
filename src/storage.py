@@ -111,16 +111,29 @@ def write_csv(path: str, header, rows) -> str:
 
 
 def read_text(path: str) -> str:
+    """
+    Read a small text object.
+
+    The remote branch decodes JVM-SIDE via commons-io (a Hadoop dependency, so
+    always on a Spark classpath) and returns one finished string.
+
+    Two approaches that look reasonable and are not:
+      * `stream.read()` in a loop returns one int per byte -- a py4j round-trip
+        per byte, so a 100 KB report becomes 100k JVM calls.
+      * `readFully(gateway.new_array(...))` silently returns ZEROS. The JVM fills
+        its own array, but the py4j proxy does not reflect that write back, so
+        you get a correctly-sized buffer of nulls and a very confusing bug.
+    """
     if is_remote(path):
         fs, jpath = _hadoop(path)
+        if int(fs.getFileStatus(jpath).getLen()) == 0:
+            return ""
+        from pyspark.sql import SparkSession
+
+        jvm = SparkSession.getActiveSession().sparkContext._jvm
         stream = fs.open(jpath)
         try:
-            data = bytearray()
-            chunk = stream.read()
-            while chunk != -1:                    # read() returns int per byte
-                data.append(chunk)
-                chunk = stream.read()
-            return bytes(data).decode("utf-8")
+            return jvm.org.apache.commons.io.IOUtils.toString(stream, "UTF-8")
         finally:
             stream.close()
     with open(path, encoding="utf-8") as fh:

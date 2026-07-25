@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash -n scripts/dataproc_submit.sh)",
+      "Bash(.venv/bin/python -m pytest tests/ -q -k mine_bucket_counts)",
+      "Bash(.venv/bin/python -m src.verify_graph --sample)",
+      "Bash(git checkout *)",
+      "Bash(git add *)",
+      "Bash(git restore *)",
+      "Bash(git commit *)",
+      "Bash([ -s \"$F\" ])"
+    ]
+  }
+}

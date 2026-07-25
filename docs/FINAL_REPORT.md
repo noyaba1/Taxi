@@ -20,8 +20,8 @@ trips (188,761 after cleaning), **full** = 1,710,670 trips (DataProc).
 | Documented DataFrame + basic statistics | `summarize_features.py` → `phase2_feature_summary_*.md` |
 | Spatial encoding, grid choice justified | `spatial_encoding.py --compare-grids` → `grid_comparison_*.md` |
 | Top-100 long sub-routes at ≥1/3/5/10/20/40 km | all four miners, `outputs/routes/*_top100_*.csv` |
-| ≥X% support, maximising length | `route_mining_maximal.py` — X calibrated **per length config** |
-| The "holes" (corridors fragmenting at forks) | `route_mining_maximal.py` holes section |
+| ≥X% support, maximising length | X calibrated **per length config** — `route_mining_suffix_array.py` (all scales) and `route_mining_maximal.py` (sample-scale reference) |
+| The "holes" (corridors fragmenting at forks) | holes section in both miners above |
 | A clustering method | `route_mining_clustering.py` (Method A) |
 | A **suffix tree / suffix array** method | `route_mining_suffix_array.py` (Method D) |
 | A method that is neither | `route_mining_graph.py` (Method C) |
@@ -111,21 +111,58 @@ Measured, from `outputs/statistics/timings.jsonl`:
 ## 5. Scalability: the finding that shaped the design
 
 The exhaustive window miner emits every contiguous window of every trip —
-O(n²) in cells per trip. Measured:
+O(n²) in cells per trip. Measured on this machine (8 cores / 16 GB):
 
 | | 4,745 trips | 188,761 trips |
 |---|---|---|
 | exhaustive windows emitted | 916,815 | **33,597,872** |
 | M5 exact (window + groupBy) | 7.5 s | **OOM — Java heap space** |
-| M7 sketches (streaming, no shuffle) | 13.0 s | **71.9 s, 66 MB fixed** |
-| **M12 suffix array** | **9.0 s** (72,271 suffixes) | **26.0 s** (2,808,406 suffixes) |
+| M8 maximal-frequent (same table) | 32.7 s | **21 GB spilled, did not finish** |
+| M7 sketches (streaming, no shuffle) | 13.0 s | 115.6 s, **66 MB fixed** |
+| **M12 suffix array** | **9.0 s** (72,271 suffixes) | **41.3 s** (2,808,406 suffixes) |
 
-So at 12% of the full dataset, on this machine, the exhaustive baseline already
-dies while the suffix array finishes in 26 seconds — and the suffix array is
-**exact**, not an approximation. Its bucketing argument is what buys that: every
-occurrence of a sub-route of ≥3 cells starts at a suffix sharing its first 3
-cells, so all occurrences land in one partition and per-partition counting needs
-no cross-partition merge.
+At 12% of the full dataset the exhaustive family already dies, while the suffix
+array finishes in well under a minute — and it is **exact**, not an
+approximation. Its bucketing argument is what buys that: every occurrence of a
+sub-route of ≥3 cells starts at a suffix sharing its first 3 cells, so all
+occurrences land in one partition and per-partition counting needs no
+cross-partition merge.
+
+Crucially, Method D **carries the whole Method-B deliverable** — the per-length X
+calibration and the holes analysis — because `mine_bucket` records each route's
+best one-cell extension in both directions. "Maximal at X%" then becomes a pure
+filter (`support ≥ min_sup ∧ max(best_right, best_left) < min_sup`), so the
+entire X grid is answered from one mining pass instead of one support table per
+X. On the sample, D reproduces B's calibration table **exactly** — same X per
+length (1.0 / 0.2 / 0.1), same route counts (130 / 193 / 111), same supports —
+in 15 s rather than 37 s, and it keeps working where B cannot run at all.
+
+### The full pipeline at 200,000 trips
+
+All eleven scale-appropriate stages, **341.9 s end to end**:
+
+| stage | wall | stage | wall |
+|---|---|---|---|
+| Phase 1 clean | 9.8 s | M12 suffix array (D) | 41.3 s |
+| Phase 2 features | 12.9 s | M9 clustering (A) | 102.7 s |
+| Phase 2 statistics | 5.8 s | M10 graph (C) | 31.7 s |
+| Phase 4 encoding | 13.4 s | M11 anomalies | 7.7 s |
+| M7 sketches | 115.6 s | comparison + map | 1.1 s |
+
+Deliverables at that scale, with supports that finally mean something:
+
+| min_len | A routes / top support | C routes / top support | D routes / top support |
+|---|---|---|---|
+| ≥1 km | 100 / 8,841 | 100 / 5,312 | 100 / 3,492 |
+| ≥3 km | 100 / 1,879 | 100 / 1,616 | 100 / 784 |
+| ≥5 km | 100 / 676 | 95 / 668 | 100 / 190 |
+| ≥10 km | 23 / 20 | 8 / 1 | 18 / 29 |
+| ≥20, ≥40 km | 0 | 0 | 0 |
+
+D's calibrated X moves exactly as designed: 1.0% (1,888 trips) at ≥1 km down to
+0.01% (19 trips) at ≥10 km. The longest routes also grow with scale — 15.1 km (A)
+and 13.6 km (C) at ≥10 km, against ~11–12 km on the sample — which is the
+expected behaviour and the reason to believe the ≥20 km band fills at 1.71M.
 
 Consequences, applied throughout:
 
@@ -266,18 +303,26 @@ and the full run is what settles it.
 ## 10. Honest limitations
 
 1. **The full 1.71M DataProc run has not been executed.** Everything is validated
-   at 5k and exercised at 200k on one machine. The cloud path is scripted and
-   the storage layer is `gs://`-aware, but it is untested against real GCS.
-2. **≥20/40 km configs are empty at sample scale** (§9) and need the full data.
-3. **Method A clusters a capped subset** (`CLUSTERING_MAX_TRIPS = 50,000`)
+   at 5k and the whole scale-appropriate pipeline runs at 200k on one machine.
+   The storage layer is verified against a URI-scheme FileSystem (`file://`,
+   which takes the identical code path to `gs://`) but not against real GCS.
+2. **≥20/40 km configs are still empty at 200k.** No 20 km corridor is driven
+   by even two taxis in 12% of the data. Longest-route length does grow with
+   scale (11 → 15 km between the two runs), so the band may fill at 1.71M — but
+   that is an expectation, not a result.
+3. **Method B (maximal-frequent) is sample-scale only.** It shares the O(n²)
+   support table; at 200k it spilled 21 GB without finishing. Method D carries
+   its deliverable at scale and reproduces its sample output exactly, so nothing
+   is lost — but B itself does not scale, and the report should not imply it does.
+4. **Method A clusters a capped subset** (`CLUSTERING_MAX_TRIPS = 50,000`)
    because the LSH self-join grows quadratically. Its `support` is measured on
    all trips, but `cluster_size` is a sample statistic; the report says so.
-4. **Methods A and C collect a pruned graph to the driver.** Bounded by
+5. **Methods A and C collect a pruned graph to the driver.** Bounded by
    `EDGE_COLLECT_CAP`, but a distributed community detection would be needed
    beyond that.
-5. **The ground-truth files** (`solution_*.csv`) are resolved by `config.py` but
+6. **The ground-truth files** (`solution_*.csv`) are resolved by `config.py` but
    unused — no destination/ETA accuracy study.
-6. **The suffix array truncates suffixes at 200 cells** (~60 km), matching the
+7. **The suffix array truncates suffixes at 200 cells** (~60 km), matching the
    window cap. Corridors longer than that are out of scope by construction.
 
 ---
