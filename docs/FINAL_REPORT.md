@@ -440,16 +440,92 @@ deliverable is a fair summary with a real caveat, not an artefact of averaging.
 
 ---
 
+## 9d. THE FULL 1.71M RUN — executed locally
+
+All 13 scale-appropriate stages, **1,994 s (33 min)** on one 8-core / 16 GB
+laptop, `SPARK_SHUFFLE_PARTS=200`, 10 GB driver:
+
+| stage | wall | stage | wall |
+|---|---|---|---|
+| Phase 1 clean | 56.6 s | M9 clustering (A) | 120.4 s |
+| Phase 2 features | 38.5 s | M10 graph (C) | 119.4 s |
+| Phase 2 statistics | 6.9 s | M11 anomalies | 15.8 s |
+| Phase 4 encoding | 58.8 s | M16 comparison | 0.6 s |
+| **M7 sketches** | **749.9 s** | M17 held-out | 6.5 s |
+| **M12 suffix array** | **409.4 s** | **M18 temporal** | **410.4 s** |
+| | | M15 map | 1.1 s |
+
+The quadratic family (M5/M6/M8) is excluded at this scale by design; Method D
+carries their deliverable.
+
+### The scaling law was right
+
+Predicted from four smaller scales (5k / 189k / 377k / 755k) at R²≈0.98:
+
+| | predicted @1.71M | **measured** |
+|---|---|---|
+| longest corridor, floor=2 | 27.7 km | **26.25 km** (within 5%) |
+| ≥20 km band populates? | yes | **yes** — 20 routes |
+| ≥40 km band populates? | no | **no** — 0 routes |
+
+A power law fitted on data up to 755k predicted 1.71M behaviour to within 5%.
+Porto has no 40 km stretch that even two taxis repeat — a fact about the city.
+
+### The deliverable, and the honest reading of it
+
+| min_len | min_sup | = X% | routes | top support | distinct taxis | longest |
+|---|---|---|---|---|---|---|
+| ≥1 km | 5,000 | 0.310% | 639 | 14,330 | **435** | 4.70 km |
+| ≥3 km | 2,500 | 0.155% | 292 | 4,701 | **435** | 6.17 km |
+| ≥5 km | 1,000 | 0.062% | 195 | 1,945 | 369 | 8.72 km |
+| ≥10 km | 50 | 0.003% | 217 | 107 | 84 | 12.41 km |
+| ≥20 km | 2 | 0.0001% | 20 | 2 | **1** | 26.25 km |
+| ≥40 km | 2 | 0.0001% | **0** | — | — | — |
+
+The top ≥1 km and ≥3 km corridors are driven by **435 of the 442 taxis in the
+fleet** — essentially every vehicle in Porto. Those are unambiguously public
+routes.
+
+**And then the band that "fills" turns out to be hollow.** All 20 routes at
+≥20 km have ≤2 taxis, and the longest — 26.25 km — is **2 trips from a single
+vehicle**. It satisfies the letter of the deliverable and means nothing as
+popularity. This is the length-versus-confidence trade-off stated numerically:
+median trips-per-taxi falls 17.9 → 8.5 → 4.0 → 1.2 → 1.0 as the length
+requirement rises. Without the distinct-taxi column this would have been
+reported as a 26 km popular corridor.
+
+### The other findings held at full scale
+
+- **Held-out generalisation:** lift **3.5–5.6x** over the null on 318 unseen
+  trips (A 5.6x, C 4.5x, D 3.5x). Corridors mined from all 1.71M trips still
+  describe how taxis move on data the pipeline never saw.
+- **Temporal:** mean overlap **0.78**, night lowest at **0.69**, midday highest
+  at 0.87 — near-identical to the 200k result, so the finding is stable in
+  scale, not an artefact of sample size.
+- **Cross-method:** A↔D agree strongly (A→D 0.93, D→A 0.84); C is the outlier
+  (0.31–0.47), as it has been at every scale.
+
+### One claim the full run disproved
+
+The HyperLogLog justification was **wrong, and the measurement says so**: HLL is
+**4.6x slower** than exact `countDistinct` even at 1.71M trips. The argument had
+been "~85M (cell, taxi) pairs", but that is the *input* size; what decides
+whether a distinct-count sketch pays is *cardinality per group*, and with only
+442 taxis no cell can exceed 442 distinct values. There is no crossover to find.
+The table is kept as a measured negative result — the shape to look for before
+reaching for a cardinality sketch is an *unbounded* group, which this is not.
+
+---
+
 ## 10. Honest limitations
 
-1. **The full 1.71M DataProc run has not been executed.** Everything is validated
-   at 5k and the whole scale-appropriate pipeline runs at 200k on one machine.
-   The storage layer is verified against a URI-scheme FileSystem (`file://`,
-   which takes the identical code path to `gs://`) but not against real GCS.
-2. **≥20/40 km configs are still empty at 200k.** No 20 km corridor is driven
-   by even two taxis in 12% of the data. Longest-route length does grow with
-   scale (11 → 15 km between the two runs), so the band may fill at 1.71M — but
-   that is an expectation, not a result.
+1. **The DataProc run has not been executed.** The full 1.71M pipeline HAS now
+   run end to end locally (§9d, 33 min), so the remaining gap is the cluster
+   itself: the storage layer is verified against a URI-scheme FileSystem
+   (`file://`, identical code path to `gs://`) but never against real GCS.
+2. **The ≥40 km configuration is empty, and ≥20 km is hollow** (§9d). Both are
+   findings rather than gaps, but they should be presented as such rather than
+   as a top-100 list the reader will assume is meaningful.
 3. **Method B (maximal-frequent) is sample-scale only.** It shares the O(n²)
    support table; at 200k it spilled 21 GB without finishing. Method D carries
    its deliverable at scale and reproduces its sample output exactly, so nothing

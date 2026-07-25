@@ -89,10 +89,15 @@ to name it is the opposite of what the brief rewards.
 
 ### What "popular" means here
 
-Support counts distinct **trips** *and* distinct **taxis**. With only 442
-vehicles over a year, a corridor driven 200 times by one driver is a habit, not
-a route — and the ≥10 km band turns out to be dominated by single-vehicle
-repeats. See the taxi-diversity section of the method comparison.
+Support counts distinct **trips** *and* distinct **taxis** — with only 442
+vehicles over a year, a corridor driven many times by one driver is a habit, not
+a route.
+
+At full scale this is the difference between a real answer and a wrong one. The
+top ≥1 km and ≥3 km corridors are driven by **435 of the 442 taxis** — the whole
+fleet, unambiguously public. But every route in the ≥20 km band has ≤2 taxis,
+and the longest (26.25 km) is **2 trips from a single vehicle**. Without the
+taxi column that would have been reported as a 26 km popular corridor.
 
 ---
 
@@ -102,7 +107,12 @@ repeats. See the taxi-diversity section of the method comparison.
 |---|---|---|
 | `--sample` | 5,000 | correctness; every stage and verifier, ~3 min |
 | `--mid` | 200,000 | real shuffle, skew and spill on one machine |
-| `--full` | 1,710,670 | DataProc |
+| `--scale s400k` / `s800k` | 400k / 800k | points for the scaling study |
+| `--full` | 1,710,670 | **runs locally in ~33 min**; also the DataProc target |
+
+The full dataset has been run end to end on one 8-core / 16 GB laptop
+(`SPARK_SHUFFLE_PARTS=200 SPARK_DRIVER_MEM=10g`). See `docs/FINAL_REPORT.md` §9d
+for stage timings and results.
 
 **Measured:** the exhaustive window miner emits ~34M window rows at 200k trips
 and OOMs on 16 GB; the suffix array indexes the same data as 2.8M suffixes in

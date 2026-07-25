@@ -301,10 +301,22 @@ def main(scale: str) -> None:
 
         rep += ["", "## HyperLogLog vs exact: distinct taxis per cell",
                 "",
-                "The one place in this pipeline where a cardinality sketch is "
-                "genuinely warranted -- ~85M (cell, taxi) pairs at full scale. "
-                "(Corridor supports are counted EXACTLY instead: their suffix-array "
-                "buckets are small, so a sketch would trade accuracy for nothing.)",
+                "**Measured verdict: the sketch does NOT earn its place here, and "
+                "the original justification for it was wrong.**",
+                "",
+                "The argument for HLL was '~85M (cell, taxi) pairs at full scale'. "
+                "That is the INPUT size, and it is the wrong quantity. What decides "
+                "whether a distinct-count sketch pays is the CARDINALITY PER GROUP "
+                "-- and this dataset has only 442 taxis, so no cell can ever exceed "
+                "442 distinct values. An exact set of at most 442 ids is trivial; "
+                "the sketch's fixed register array is pure overhead at every scale, "
+                "which is why HLL is slower here even on the full 1.71M dataset.",
+                "",
+                "The table is kept because a negative result measured is worth more "
+                "than a positive one assumed. HLL would pay if groups were "
+                "unbounded -- distinct PASSENGERS per cell, or distinct trips per "
+                "cell over years -- and that is the shape to look for before "
+                "reaching for one.",
                 "",
                 "| metric | value |", "|---|---|",
                 f"| cells measured | {err['cells']:,} |",
@@ -314,16 +326,11 @@ def main(scale: str) -> None:
                 f"| mean relative error | {100 * (err['mre'] or 0):.3f}% |",
                 f"| worst absolute error | {err['max_abs'] or 0} taxis |",
                 "",
-                "**Read the time row honestly: at small scale HLL is SLOWER.** "
-                "With a few thousand cells and a few hundred taxis each, an exact "
-                "set fits in memory trivially and the sketch's fixed per-group "
-                "register array is pure overhead. HLL's argument is not speed at "
-                "this size -- it is that its memory is O(1) per group against "
-                "exact's O(distinct taxis per group), so it is the version that "
-                "still runs when cardinality grows. Compare this table across "
-                "scales (sample / mid / s400k) to see where the crossover is; "
-                "reporting a sketch as a win where it is not would be exactly the "
-                "kind of unearned claim this project has been trying to remove."]
+                "There is no crossover to find: group cardinality is capped by the "
+                "fleet size (442), so the exact count stays cheap at every scale "
+                "this dataset can reach. Reporting the sketch as a win would be "
+                "exactly the kind of unearned claim this project has spent its "
+                "time removing."]
 
         rp = storage.write_lines(
             storage.out_path("statistics", f"m10_graph_{scale}.md"), rep)
