@@ -146,7 +146,7 @@ def main(scale: str) -> None:
             ["min_len_km", "rank", "support", "length_km", "n_cells", "subroute"],
             all_rows)
         rp = storage.write_lines(
-            storage.out_path("statistics", f"m6_suffix_mining_{scale}.md"), rep)
+            storage.out_path("statistics", f"m6_closed_{scale}.md"), rep)
 
         log.info("\n%s", "\n".join(rep))
         log.info("wrote closed routes -> %s", csv_path)
