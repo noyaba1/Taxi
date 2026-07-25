@@ -12,22 +12,18 @@ Checks the anomaly detectors are internally consistent and semantically correct.
 Run:
     python -m src.verify_anomaly --sample
 """
-import argparse
 import csv
-import os
 
 from pyspark.sql import functions as F
 
+from src import cli, config, storage
 from src.spark_session import get_spark
-from src import config
 from src.anomaly_analysis import add_anomaly_flags, DETECTORS
 
 
-def main(use_sample: bool) -> None:
+def main(scale: str) -> None:
     spark = get_spark("verify-anomaly")
-    suffix = "sample" if use_sample else "full"
-    feat_path = config.CLEAN_PARQUET.replace(
-        ".parquet", "_features_sample.parquet" if use_sample else "_features.parquet")
+    feat_path = config.dataset_paths(scale)["features"]
 
     df, dist_hi, _sinu = add_anomaly_flags(spark.read.parquet(feat_path))
     df.cache()
@@ -62,7 +58,7 @@ def main(use_sample: bool) -> None:
     print(f"[{'OK' if c4 == 0 else 'FAIL'}] a_distance implies > p99 fence: {c4} bad")
 
     # 5. exported CSV self-consistency
-    apath = os.path.join(config.OUTPUT_BASE, "routes", f"anomalies_top50_{suffix}.csv")
+    apath = storage.out_path("routes", f"anomalies_top50_{scale}.csv")
     with open(apath, newline="", encoding="utf-8") as fh:
         rows = list(csv.DictReader(fh))
     bad_csv = sum(1 for r in rows
@@ -76,9 +72,5 @@ def main(use_sample: bool) -> None:
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--sample", action="store_true")
-    g.add_argument("--full", action="store_true")
-    args = ap.parse_args()
-    main(use_sample=args.sample)
+    args = cli.scale_parser(__doc__).parse_args()
+    main(cli.scale_of(args))

@@ -85,7 +85,60 @@ def _ensure_hadoop_home() -> None:
             return
 
 
+# Spark 3.5.x runs on Java 8, 11 or 17 ONLY. A newer JDK (this machine shipped
+# with 26) fails deep inside the JVM with opaque reflection/module errors rather
+# than a readable "unsupported version", so we resolve a supported one ourselves
+# instead of relying on whatever JAVA_HOME happens to be.
+SUPPORTED_JAVA = (8, 11, 17)
+
+
+def _java_major(java_home: str) -> int | None:
+    """Read the major version from a JDK's release file (no subprocess)."""
+    release = os.path.join(java_home, "release")
+    try:
+        with open(release, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("JAVA_VERSION="):
+                    ver = line.split("=", 1)[1].strip().strip('"')
+                    head = ver.split(".")
+                    # "1.8.0_xxx" -> 8 ; "17.0.19" -> 17
+                    return int(head[1]) if head[0] == "1" else int(head[0])
+    except OSError:
+        return None
+    return None
+
+
+def _ensure_supported_java() -> None:
+    """
+    Point JAVA_HOME at a Spark-supported JDK if it is unset or too new.
+
+    Probes the usual install locations for Homebrew, the macOS java_home
+    registry and Linux/DataProc. A cluster image already exports a correct
+    JAVA_HOME, so this is a no-op there.
+    """
+    current = os.environ.get("JAVA_HOME")
+    if current and _java_major(current) in SUPPORTED_JAVA:
+        return
+
+    candidates = []
+    for major in (17, 11, 8):
+        candidates += [
+            f"/opt/homebrew/opt/openjdk@{major}/libexec/openjdk.jdk/Contents/Home",
+            f"/usr/local/opt/openjdk@{major}/libexec/openjdk.jdk/Contents/Home",
+            f"/Library/Java/JavaVirtualMachines/temurin-{major}.jdk/Contents/Home",
+            f"/usr/lib/jvm/java-{major}-openjdk-amd64",
+            f"/usr/lib/jvm/temurin-{major}-jdk-amd64",
+        ]
+    for cand in candidates:
+        if _java_major(cand) in SUPPORTED_JAVA:
+            os.environ["JAVA_HOME"] = cand
+            return
+    # Nothing found: leave JAVA_HOME alone and let Spark produce its own error.
+    # validate_env reports this properly before anyone reaches a real job.
+
+
 def get_spark(app_name: str = "porto-taxi", shuffle_parts: int | None = None) -> SparkSession:
+    _ensure_supported_java()     # pick a JDK Spark 3.5 actually supports
     _ensure_ascii_spark_paths()  # Windows non-ASCII path guard (no-op elsewhere)
     _ensure_hadoop_home()        # Windows winutils for local writes (no-op elsewhere)
 
@@ -93,6 +146,18 @@ def get_spark(app_name: str = "porto-taxi", shuffle_parts: int | None = None) ->
     builder = SparkSession.builder.appName(app_name)
 
     if env == "local":
+        # Spark launches Python WORKERS via `python3` from PATH, which is the
+        # system interpreter (3.13 here) -- not the venv the driver is running
+        # in. The mismatch only surfaces once a pandas_udf actually executes,
+        # as PYTHON_VERSION_MISMATCH. Pin both sides to THIS interpreter.
+        # Cloud mode is left alone: YARN executors live on other machines where
+        # this path does not exist, and the image sets its own.
+        os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+        os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
+        # Binding to the LAN address breaks when the machine roams between
+        # networks mid-run; loopback is stable and correct for local[*].
+        os.environ.setdefault("SPARK_LOCAL_IP", "127.0.0.1")
+        os.makedirs(config.LOCAL_SPARK_TMP, exist_ok=True)
         # local[*] = use all CPU cores as workers (simulates a tiny cluster).
         builder = (
             builder.master("local[*]")
@@ -103,13 +168,21 @@ def get_spark(app_name: str = "porto-taxi", shuffle_parts: int | None = None) ->
                 "spark.sql.shuffle.partitions",
                 str(shuffle_parts or config.LOCAL_SHUFFLE_PARTITIONS),
             )
+            # Keep shuffle spill on the project disk, not the (smaller) /tmp
+            # volume: the mid-scale run spills tens of GB.
+            .config("spark.local.dir", config.LOCAL_SPARK_TMP)
         )
     # In "cloud" mode we deliberately set nothing: DataProc/YARN injects
     # master, executors, memory and partition counts from the cluster.
 
     # Adaptive Query Execution: lets Spark re-plan joins/partitions at runtime.
-    # Helps on BOTH local and cloud, so we always enable it.
-    builder = builder.config("spark.sql.adaptive.enabled", "true")
+    # Helps on BOTH local and cloud, so we always enable it. Skew handling is
+    # stated explicitly because downtown H3 cells ARE hot keys -- this is the
+    # single most important setting for the sub-route groupBy.
+    builder = (builder
+               .config("spark.sql.adaptive.enabled", "true")
+               .config("spark.sql.adaptive.skewJoin.enabled", "true")
+               .config("spark.sql.adaptive.coalescePartitions.enabled", "true"))
 
     spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("WARN")  # silence the INFO flood

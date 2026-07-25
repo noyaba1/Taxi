@@ -17,31 +17,25 @@ Checks:
 Run:
     python -m src.verify_approx_mining --sample
 """
-import argparse
-import csv
-import os
 
 from pyspark.sql import functions as F
 
+from src import cli, config, storage
 from src.spark_session import get_spark
-from src import config
 from src.route_mining_exact import subroutes_udf, DELIM
 from src.route_mining_approx import build_sketches, approx_topk, THRESHOLDS, TOP_K
 
 
-def _read_csv(path):
-    with open(path, newline="", encoding="utf-8") as fh:
-        return list(csv.DictReader(fh))
 
 
-def main(use_sample: bool) -> None:
+
+def main(scale: str) -> None:
     spark = get_spark("verify-approx-mining")
-    suffix = "sample" if use_sample else "full"
     res = config.H3_RESOLUTION
 
-    enc_path = config.CLEAN_PARQUET.replace(".parquet", f"_encoded_r{res}_{suffix}.parquet")
-    approx_csv = os.path.join(config.OUTPUT_BASE, "routes", f"approx_top100_{suffix}.csv")
-    exact_csv = os.path.join(config.OUTPUT_BASE, "routes", f"exact_top100_{suffix}.csv")
+    enc_path = config.dataset_paths(scale)["encoded"]
+    approx_csv = storage.out_path("routes", f"approx_top100_{scale}.csv")
+    exact_csv = storage.out_path("routes", f"exact_top100_{scale}.csv")
 
     enc = spark.read.parquet(enc_path).select("h3_seq_compact")
     trips = enc.withColumn(
@@ -50,8 +44,14 @@ def main(use_sample: bool) -> None:
     trips.cache()
     n_trips = trips.count()
 
-    approx = _read_csv(approx_csv)
-    exact = _read_csv(exact_csv)
+    approx = storage.read_csv_rows(approx_csv)
+    exact = storage.read_csv_rows(exact_csv)
+    if not approx or not exact:
+        print("no approx/exact output for scale=%s -- the exact baseline is "
+              "sample-scale only; skipping." % scale)
+        spark.stop()
+        return
+
     print(f"Spark {spark.version} | trips={n_trips:,} | approx rows={len(approx)}")
     ok = True
 
@@ -103,8 +103,8 @@ def main(use_sample: bool) -> None:
     print("\n=== determinism (same seed/config -> identical top-k) ===")
     windows = enc.select(F.explode(subroutes_udf("h3_seq_compact")).alias("w")).select("w.*").cache()
     windows.count()
-    ss1, _c1, _p1, _m1 = build_sketches(windows)
-    ss2, _c2, _p2, _m2 = build_sketches(windows)
+    ss1, _cm1, _parts1, _n1 = build_sketches(windows)
+    ss2, _cm2, _parts2, _n2 = build_sketches(windows)
     t1, t2 = approx_topk(ss1), approx_topk(ss2)
     det_ok = True
     for L in THRESHOLDS:
@@ -120,9 +120,5 @@ def main(use_sample: bool) -> None:
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--sample", action="store_true")
-    g.add_argument("--full", action="store_true")
-    args = ap.parse_args()
-    main(use_sample=args.sample)
+    args = cli.scale_parser(__doc__).parse_args()
+    main(cli.scale_of(args))

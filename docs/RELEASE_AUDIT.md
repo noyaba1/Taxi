@@ -1,5 +1,12 @@
 # Release Audit — First DataProc Deployment
 
+> ⚠️ **Superseded by [DATAPROC.md](DATAPROC.md).** This run-book predates the
+> storage-layer fix: it points `OUTPUT_BASE` at the master's `/tmp`, which the
+> cluster teardown then destroys, uses `--num-workers 4`, and reads the raw file
+> from `train.csv/train.csv`. Kept for its narrative and monitoring detail only —
+> follow DATAPROC.md for the commands.
+
+
 Release-engineer sign-off document for the first (one-shot) full-scale run. No new
 algorithms, no redesign. Grounded in the actual code (paths/imports verified) and
 the measured 5k/50k/100k local dry runs. Full-scale figures are **directional
@@ -17,15 +24,15 @@ Chain (cloud submit order). `D = gs://<bucket>/porto`. Encoded/feature names car
 
 | # | Stage | Input | Output | Rows (full est.) | Files created |
 |---|---|---|---|---|---|
-| 1 | `clean_data` | `D/raw/train.csv` | `D/processed/trips_clean.parquet` | 1,710,670 → **~1.66M valid** (~97%) | parquet dir |
-| 2 | `feature_engineering` | `trips_clean.parquet` | `…_features.parquet` | ~1.66M (1:1) | parquet dir |
-| 3 | `spatial_encoding` | `…_features.parquet` | `…_encoded_r9_full.parquet` | ~1.66M (1:1) | parquet dir + 2 report `.md` |
+| 1 | `clean_data` | `D/raw/train.csv` | `D/processed/trips_clean_full.parquet` | 1,710,670 → **~1.66M valid** (~97%) | parquet dir |
+| 2 | `feature_engineering` | `trips_clean_full.parquet` | `…_features_full.parquet` | ~1.66M (1:1) | parquet dir |
+| 3 | `spatial_encoding` | `…_features_full.parquet` | `…_encoded_r9_full.parquet` | ~1.66M (1:1) | parquet dir + 2 report `.md` |
 | 4 | `route_mining_maximal` | `…_encoded_r9_full.parquet` | `maximal_frequent_top100_full.csv` | 100s of maximal routes | 1 csv + 1 md |
 | 5 | `route_mining_exact` | `…_encoded_r9_full.parquet` | `exact_top100_full.csv` | ~600 rows (top-100 × 6) | 1 csv + 1 md |
 | 6 | `route_mining_approx` | `…_encoded_r9_full.parquet` | `approx_top100_full.csv` | ~600 rows | 1 csv + 1 md |
 | 7 | `route_mining_clustering` | `…_encoded_r9_full.parquet` (samples 50k) | `clustering_top100_full.csv` | ~600 rows | 1 csv + 1 md |
 | 8 | `route_mining_graph` | `…_encoded_r9_full.parquet` | `graph_heavy_paths_top100_full.csv`, `activity_zones_full.csv` | ~600 + 50 rows | 2 csv + 1 md |
-| 9 | `anomaly_analysis` | `…_features.parquet` | `anomalies_top50_full.csv` | ≤50 rows | 1 csv + 1 md |
+| 9 | `anomaly_analysis` | `…_features_full.parquet` | `anomalies_top50_full.csv` | ≤50 rows | 1 csv + 1 md |
 
 **Schemas (verified from code):**
 - `trips_clean`: `TRIP_ID, TAXI_ID, CALL_TYPE, TIMESTAMP, start_time, n_points,
@@ -45,7 +52,7 @@ independent (could run in parallel; the script runs them serially for clarity).
 
 | Stage | Would fail if… | Appears as… | Verify success immediately |
 |---|---|---|---|
-| clean | RAW_TRAIN unset / bad raw | `FileNotFoundException` at read | `gsutil ls D/processed/trips_clean.parquet/_SUCCESS`; driver prints `valid trips` % |
+| clean | RAW_TRAIN unset / bad raw | `FileNotFoundException` at read | `gsutil ls D/processed/trips_clean_full.parquet/_SUCCESS`; driver prints `valid trips` % |
 | features | pyarrow/pandas absent | Arrow/`PythonException` in UDF | `_SUCCESS`; driver prints anomaly % table |
 | encoding | `h3` not installed | `ModuleNotFoundError: h3` | `_SUCCESS`; driver prints `avg_compact ≈ 17` |
 | maximal | encoded name mismatch / OOM shuffle | `Path…not found` / executor lost | driver prints `maximal-frequent routes: N`; csv exists |
@@ -107,7 +114,7 @@ Simulated order from `scripts/dataproc_submit.sh`:
 |---|---|---|---|---|---|
 | 0 | `gsutil mb` / `cp raw` / `cp src.zip` | local files | GCS objects | billing/quota, upload stall | `gsutil ls D/raw/train.csv` (~1.9 GiB) |
 | 1 | cluster create (+init pip) | — | 5-node cluster | CPU quota, init pip fail | `gcloud dataproc clusters list` → RUNNING |
-| 2 | submit `clean_data.py` | `D/raw/train.csv` | `trips_clean.parquet` | RAW_TRAIN unset | `gsutil ls …/_SUCCESS` |
+| 2 | submit `clean_data.py` | `D/raw/train.csv` | `trips_clean_full.parquet` | RAW_TRAIN unset | `gsutil ls …/_SUCCESS` |
 | 3 | submit `feature_engineering.py` | clean | `…_features` | Arrow | `_SUCCESS` |
 | 4 | submit `spatial_encoding.py` | features | `…_encoded_r9_full` | h3 missing | `_SUCCESS` + report md |
 | 5 | submit `route_mining_maximal.py` | encoded | csv+md | shuffle OOM | job SUCCEEDED; driver counts |
@@ -128,8 +135,8 @@ Each `submit` = `gcloud dataproc jobs submit pyspark src/<X>.py --cluster porto
 
 | Artifact | Validation |
 |---|---|
-| `trips_clean.parquet` | `_SUCCESS` exists; `spark.read…count()` ≈ 1.66M; schema has `points:array<array<double>>`; driver's valid-% ≈ 97 |
-| `…_features.parquet` | 1:1 row count with clean; `avg_speed`/`sinuosity` sane (median ~24 km/h / ~1.5); anomaly % single digits |
+| `trips_clean_full.parquet` | `_SUCCESS` exists; `spark.read…count()` ≈ 1.66M; schema has `points:array<array<double>>`; driver's valid-% ≈ 97 |
+| `…_features_full.parquet` | 1:1 row count with clean; `avg_speed`/`sinuosity` sane (median ~24 km/h / ~1.5); anomaly % single digits |
 | `…_encoded_r9_full.parquet` | 1:1 rows; **run `verify_encoding --full`**: 0 invalid H3 cells, compact ≤ raw, cells in Porto bbox |
 | `exact_top100_full.csv` | **`verify_route_mining --full`**: brute-force containment support == reported; length ≥ threshold |
 | `maximal_frequent_top100_full.csv` | **`verify_maximal --full`**: each route frequent (≥ min_sup) AND maximal; holes reproducible |

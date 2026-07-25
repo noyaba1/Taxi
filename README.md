@@ -1,122 +1,173 @@
 # Porto Taxi Trajectory Analysis — Big Data / Spark Project
 
-Local-first PySpark project (VS Code on Windows) designed to migrate cleanly to
-**GCP DataProc** (5+ machines). We build & debug everything on a small local
-sample, run once on the full 1.9 GB file, and only *then* go to the cloud.
+Local-first PySpark project designed to migrate cleanly to **GCP DataProc**.
+Build and debug on a small sample, validate at mid scale on one machine, and only
+then spend cloud budget.
+
+**Deliverable:** the top-100 **popular long sub-routes** for minimum lengths
+{1, 3, 5, 10, 20, 40} km, found by **four independent methods**, plus activity
+zones, anomalous routes, an approximate-vs-exact comparison, and a map.
 
 ---
 
-## Dataset (lecturer's files)
+## Dataset
 
 | File | Size | What it is |
 |------|------|-----------|
-| `train.csv/train.csv` | ~1.9 GB | Full Porto dataset, ~1.71M trips, 442 taxis |
+| `train.csv` | ~1.9 GB | Full Porto dataset, **1,710,670** trips, 442 taxis, 2013–2014 |
 | `Porto_taxi_data_test_partial_trajectories.csv` | 447 KB | Test set, partial trajectories |
-| `solution_challengeII.csv` | — | `TRIP_ID, TRAVEL_TIME` (ground-truth travel time) |
-| `solution_fixed.csv` | — | `TRIP_ID, LATITUDE, LONGITUDE` (ground-truth destination) |
+| `solution_challengeII.csv` | — | `TRIP_ID, TRAVEL_TIME` ground truth |
+| `solution_fixed.csv` | — | `TRIP_ID, LATITUDE, LONGITUDE` ground truth |
+
+Ships inside `taxi+service+trajectory+prediction+challenge+ecml+pkdd+2015/`;
+`config.py` also accepts `train.csv/train.csv` or a plain `train.csv`, or an
+explicit `RAW_TRAIN=` override.
 
 **Schema:** `TRIP_ID, CALL_TYPE, ORIGIN_CALL, ORIGIN_STAND, TAXI_ID, TIMESTAMP,
 DAY_TYPE, MISSING_DATA, POLYLINE`.
 
 > ⚠️ **POLYLINE is `[longitude, latitude]` (lon first).** GPS sampled every 15 s,
 > so `duration ≈ (n_points − 1) × 15` seconds. Getting lon/lat backwards flips
-> the entire map — this is the single most common bug in this dataset.
+> the entire map — the single most common bug in this dataset.
 
 ---
 
-## Roadmap (phases)
+## Quick start
 
-**All phases below are implemented and validated on the 5k sample** (each stage
-has an independent `verify_*.py`). The full/DataProc run is the remaining step.
-Authoritative detail: `docs/FINAL_REPORT.md`; design: `docs/ARCHITECTURE.md`.
+See [SETUP.md](SETUP.md) for the full environment (Java 17, Python 3.11).
 
-| Phase | File(s) | Goal | State |
-|-------|---------|------|-------|
-| 0 | `requirements.txt`, `SETUP.md` | Environment + Java 11 + Spark 3.5.1 | ✅ |
-| 1 | `load_data.py`, `clean_data.py` (+`verify_phase1`) | Parse POLYLINE, clean, Parquet | ✅ |
-| 2 | `feature_engineering.py`, `summarize_features.py` | Distance/speed/bbox/anomaly, stats | ✅ |
-| 4 | `spatial_encoding.py` (+`verify_encoding`) | H3 res-9 encoding + resolution sweep | ✅ |
-| 5-B | `route_mining_{exact,suffix,approx,maximal}.py` | Method B: exact / closed / approx / **min-support X% + maximal** | ✅ |
-| 6-A | `route_mining_clustering.py` | Method A: MinHash-LSH + star clustering | ✅ |
-| 7-C | `route_mining_graph.py` | Method C (original): transition graph + **activity zones** | ✅ |
-| — | `anomaly_analysis.py` | Anomalous routes (5 detectors) | ✅ |
-| 8 | `evaluation.py`, `visualization.py`, notebook | A/B/C comparison, map, Colab demo | ✅ |
-| Ops | `run_pipeline.py`, `tests/`, `scripts/dataproc_submit.sh` | Orchestrator, unit tests, cloud deploy | ✅ |
-| Cloud | `docs/DATAPROC.md` | Full 1.71M run on DataProc (5 machines) + GCS | ⏳ pending |
-
-**Target deliverable:** top-100 popular long sub-routes for min lengths
-{1, 3, 5, 10, 20, 40} km, via 3 methods (A/B/C) + approximate structures, with
-runtime/memory/accuracy comparison, activity zones, anomalies, and a map.
-
----
-
-## Phase 0 — Local setup (Windows + VS Code)
-
-### ⚠️ Two environment problems detected on your machine
-
-1. **Java is not installed.** Spark runs on the JVM — it cannot start without it.
-2. **You have Python 3.13.1.** PySpark officially supports **3.8–3.12 only**;
-   3.13 can crash with cryptic Py4J errors. Use a 3.11 virtual env.
-
-### Recommended: also move the project off OneDrive + Hebrew path
-The current path `OneDrive\שולחן העבודה\...` has **spaces, non-ASCII, and live
-OneDrive sync**. All three cause real problems for Spark on Windows (and OneDrive
-will try to upload the 1.9 GB file). Strongly recommended working copy:
-`C:\dev\taxi`. Keep the data there too.
-
-### Steps
-
-```powershell
-# 1. Install Java 11 (Temurin/Adoptium) and Python 3.11.
-#    Then verify:
-java -version           # should print 11.x
-py -3.11 --version      # should print 3.11.x
-
-# 2. Create + activate a clean virtual env (from project root)
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-
-# 3. Install dependencies
-pip install -r requirements.txt
-
-# 4. Tell Spark where Java + Python are (PowerShell session vars)
-$env:JAVA_HOME = "C:\Program Files\Eclipse Adoptium\jdk-11..."  # adjust
-$env:PYSPARK_PYTHON = (Resolve-Path .\.venv\Scripts\python.exe)
-
-# 5. (Windows only) winutils.exe for Hadoop — see note below.
+```bash
+.venv/bin/python -m src.validate_env                    # env gate
+.venv/bin/python -m src.make_sample --sample            # 5,000 trips
+.venv/bin/python -m src.run_pipeline --sample --verify  # 14 stages + 9 verifiers
+.venv/bin/python -m pytest tests/ -q                    # 36 unit tests
 ```
 
-> **winutils:** Spark on Windows needs `winutils.exe` + `hadoop.dll` matching the
-> bundled Hadoop version. Put them in `C:\hadoop\bin` and set
-> `$env:HADOOP_HOME = "C:\hadoop"`. Without this, Parquet writes throw
-> `NullPointerException` / `UnsatisfiedLinkError`.
-
-### Run Phase 1
-
-```powershell
-# Always develop on the sample first (seconds, not minutes):
-python -m src.make_sample 5000        # build a 5k-trip sample from train.csv
-python -m src.clean_data --sample     # parse + clean + write Parquet
-
-# Only after it looks right, run the full file once:
-python -m src.clean_data --full
-```
-
-**Expected output (sample):** a quality report (total / valid / dropped trips)
-and `data/processed/trips_clean_sample.parquet/`.
+Open `outputs/maps/porto_map_sample.html`.
 
 ---
 
-## Migration to GCP DataProc (what changes)
+## Pipeline
 
-Almost nothing in the code — by design:
+```
+raw CSV
+  → clean_data           parse POLYLINE, reject corrupt trips, dedupe TRIP_ID
+  → feature_engineering  distance / speed / sinuosity / bbox + anomaly flags
+  → summarize_features   distribution statistics
+  → spatial_encoding     H3 res-9 cell sequences  (anomalous trips EXCLUDED here)
+  → four mining methods + anomaly analysis
+  → evaluation (A/B/C/D comparison) · visualization (Folium / Colab)
+```
+
+Central idea: after encoding, **a trip is a string over an H3-cell alphabet**, so
+a sub-route is a contiguous substring, "popular" = distinct-trip support, "long"
+= ground length ≥ L. One representation feeds every method.
+
+### The four methods
+
+| | file | approach | popularity |
+|---|---|---|---|
+| **A** | `route_mining_clustering.py` | MinHash-LSH over directed bigram shingles → greedy star clustering → the longest cell run ≥60% of members share | distinct-trip support |
+| **B** | `route_mining_maximal.py` | contiguous n-gram support table → maximal among routes clearing X%, **X calibrated per length config** | distinct-trip support |
+| **C** | `route_mining_graph.py` | directed cell-transition graph → PageRank activity zones + dominant-flow heavy paths, validated against real trips | distinct-trip support |
+| **D** | `route_mining_suffix_array.py` | generalised **suffix array + LCP intervals** — exact, without enumerating windows | distinct-trip support |
+
+All four report the same unit, so the cross-method comparison compares like with
+like. Supporting stages: `route_mining_exact.py` (exhaustive baseline, ground
+truth at small scale), `route_mining_suffix.py` (closed sub-routes),
+`route_mining_approx.py` (Space-Saving + Count-Min sketches vs exact).
+
+### Approximate structures
+
+MinHash-LSH (Method A), Space-Saving frequent-items and Count-Min (M7),
+Greenwald-Khanna quantiles (anomaly fences) — each compared against exact.
+
+---
+
+## Scales
+
+| flag | trips | purpose |
+|---|---|---|
+| `--sample` | 5,000 | correctness; every stage and verifier, ~3 min |
+| `--mid` | 200,000 | real shuffle, skew and spill on one machine |
+| `--full` | 1,710,670 | DataProc |
+
+**Measured:** the exhaustive window miner emits ~34M window rows at 200k trips
+and OOMs on 16 GB; the suffix array indexes the same data as 2.8M suffixes in
+26 s. So M5/M6 run at `--sample` only (they are the ground truth the others are
+checked against), and `route_mining_exact` refuses to start above
+`EXACT_MAX_TRIPS` rather than failing an hour in. `run_pipeline` picks the right
+stages per scale automatically.
+
+---
+
+## Correctness
+
+Every stage ships a `verify_*.py` that recomputes its result by an **independent
+method**:
+
+- sub-route support by brute-force substring containment vs the mining's
+  window/groupBy or Aho-Corasick path;
+- the suffix array's supports cross-checked against the exhaustive baseline
+  (**0 disagreements** across all shared routes on the sample);
+- sketch bounds (Space-Saving `[lb,ub]` brackets truth, Count-Min ≥ truth) and
+  determinism;
+- clustering cohesion and route continuity;
+- graph routes validated against real trips (anti-"Frankenstein");
+- anomaly self-consistency.
+
+Plus 36 unit tests on the pure functions, including brute-force cross-checks of
+the LCP-interval enumeration and the Aho-Corasick automaton.
+
+### Corrupt data is removed, not just flagged
+
+Phase 2 flags physically impossible trajectories (GPS teleport, >200 km/h
+segment, parked, outside the metro box); `spatial_encoding` **excludes** them
+before mining, and every miner additionally splits trajectories at any hop larger
+than `config.max_cell_hop_km()` (~1.18 km at res 9 — the retained-speed limit
+plus cell quantisation).
+
+This matters because sub-route length is measured between cell centres. Measured
+on the 5k sample without the guard: the worst window reported **53.6 km per cell
+hop** (45× the physical bound) and **563 windows ≥10 km were built across GPS
+gaps** — one claiming 59.8 km from 19 cells. Those land directly in the graded
+≥10/20/40 km lists. With the guard: worst ratio 1.10 km, zero violations.
+
+---
+
+## GCP DataProc
+
+Almost nothing in the code changes — by design:
 
 | Concern | Local | DataProc |
 |---------|-------|----------|
-| Storage | `data/` folder | `export DATA_BASE=gs://bucket/porto` |
-| Spark master | `local[*]` (set in `spark_session.py`) | `export SPARK_ENV=cloud` (YARN sets it) |
-| Memory / partitions | small, in `config.py` | from cluster config |
-| Submit | `python -m src.clean_data` | `gcloud dataproc jobs submit pyspark` |
+| Storage | `data/` | `DATA_BASE=gs://bucket/porto` |
+| Results | `outputs/` | `OUTPUT_BASE=gs://bucket/porto/outputs` (see `src/storage.py`) |
+| Spark master | `local[*]` | `SPARK_ENV=cloud` (YARN provides it) |
+| Submit | `python -m src.<stage>` | `bash scripts/dataproc_submit.sh` |
 
-> Budget rule: **never debug in the cloud.** Get correct results on the local
-> sample → full local run → then one clean DataProc run for the final timings.
+`src/storage.py` writes every report and CSV through Hadoop FS when the path has
+a URI scheme, so results land in GCS and survive cluster teardown.
+
+> Budget rule: **never debug in the cloud.** Get correct results on `--sample`,
+> exercise the shuffle on `--mid`, then do one cheap `--sample` cloud rehearsal
+> before the full run.
+
+---
+
+## Layout
+
+```
+src/       config, storage, cli, cells, ahocorasick, spark_session, load_data,
+           make_sample, clean_data, feature_engineering, summarize_features,
+           spatial_encoding, route_mining_{exact,suffix,suffix_array,approx,
+           maximal,clustering,graph}, anomaly_analysis, evaluation,
+           visualization, run_pipeline, validate_env, + verify_*.py per stage
+tests/     pytest unit tests (pure functions)
+docs/      ARCHITECTURE, DESIGN_REVIEW, DATAPROC, FINAL_REPORT, …
+scripts/   dataproc_submit.sh
+notebooks/ porto_routes_colab.ipynb   (Colab Enterprise demo, all six configs)
+```
+
+`data/` and `outputs/` are git-ignored and regenerated by
+`python -m src.run_pipeline --sample --build-sample`.

@@ -1,5 +1,12 @@
 # Live Monitoring Guide — DataProc Execution
 
+> ⚠️ **Superseded by [DATAPROC.md](DATAPROC.md).** This run-book predates the
+> storage-layer fix: it points `OUTPUT_BASE` at the master's `/tmp`, which the
+> cluster teardown then destroys, uses `--num-workers 4`, and reads the raw file
+> from `train.csv/train.csv`. Kept for its narrative and monitoring detail only —
+> follow DATAPROC.md for the commands.
+
+
 What to watch while the pipeline runs, so we spot trouble early and stop before
 wasting budget. Stages cluster into four behavioural types; watch each type the
 same way.

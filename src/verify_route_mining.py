@@ -15,31 +15,24 @@ Checks:
 Run:
     python -m src.verify_route_mining --sample
 """
-import argparse
-import csv
-import os
 
 from pyspark.sql import functions as F
 
+from src import cli, config, storage
 from src.spark_session import get_spark
-from src import config
 
 DELIM = ">"
 
 
-def _read_top_csv(path):
-    with open(path, newline="", encoding="utf-8") as fh:
-        return list(csv.DictReader(fh))
 
 
-def main(use_sample: bool) -> None:
+
+def main(scale: str) -> None:
     spark = get_spark("verify-route-mining")
     res = config.H3_RESOLUTION
-    suffix = "sample" if use_sample else "full"
 
-    enc_path = config.CLEAN_PARQUET.replace(
-        ".parquet", f"_encoded_r{res}_{suffix}.parquet")
-    csv_path = os.path.join(config.OUTPUT_BASE, "routes", f"exact_top100_{suffix}.csv")
+    enc_path = config.dataset_paths(scale)["encoded"]
+    csv_path = storage.out_path("routes", f"exact_top100_{scale}.csv")
 
     enc = spark.read.parquet(enc_path).select("h3_seq_compact")
     # Wrap each trip's cell string with delimiters so '>A>B>' can't match inside a cell.
@@ -51,7 +44,13 @@ def main(use_sample: bool) -> None:
     n_trips = wrapped.count()
     print(f"Spark {spark.version} | trips={n_trips:,} | verifying {csv_path}")
 
-    rows = _read_top_csv(csv_path)
+    rows = storage.read_csv_rows(csv_path)
+    if not rows:
+        print("no exact-mining output for scale={scale} -- stage not run at this "
+              "scale; skipping.".format(scale=scale))
+        spark.stop()
+        return
+
     ok = True
 
     # --- 1 & 2: cheap structural checks over ALL reported routes ---
@@ -86,9 +85,5 @@ def main(use_sample: bool) -> None:
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--sample", action="store_true")
-    g.add_argument("--full", action="store_true")
-    args = ap.parse_args()
-    main(use_sample=args.sample)
+    args = cli.scale_parser(__doc__).parse_args()
+    main(cli.scale_of(args))

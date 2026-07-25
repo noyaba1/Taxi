@@ -16,35 +16,29 @@ Checks:
 Run:
     python -m src.verify_suffix_mining --sample
 """
-import argparse
-import csv
-import os
 
 from pyspark.sql import functions as F
 
+from src import cli, config, storage
 from src.spark_session import get_spark
-from src import config
 from src.route_mining_suffix import SUPPORT_TOL
 from src.route_mining_exact import DELIM
 
 
-def _read_csv(path):
-    with open(path, newline="", encoding="utf-8") as fh:
-        return list(csv.DictReader(fh))
+
 
 
 def _wrapped(s):
     return DELIM + s + DELIM
 
 
-def main(use_sample: bool) -> None:
+def main(scale: str) -> None:
     spark = get_spark("verify-suffix-mining")
-    suffix = "sample" if use_sample else "full"
     res = config.H3_RESOLUTION
 
-    enc_path = config.CLEAN_PARQUET.replace(".parquet", f"_encoded_r{res}_{suffix}.parquet")
-    m6_csv = os.path.join(config.OUTPUT_BASE, "routes", f"suffix_maximal_top100_{suffix}.csv")
-    m5_csv = os.path.join(config.OUTPUT_BASE, "routes", f"exact_top100_{suffix}.csv")
+    enc_path = config.dataset_paths(scale)["encoded"]
+    m6_csv = storage.out_path("routes", f"suffix_maximal_top100_{scale}.csv")
+    m5_csv = storage.out_path("routes", f"exact_top100_{scale}.csv")
 
     trips = spark.read.parquet(enc_path).withColumn(
         "trip_str", F.concat(F.lit(DELIM), F.concat_ws(DELIM, "h3_seq_compact"), F.lit(DELIM))
@@ -52,8 +46,14 @@ def main(use_sample: bool) -> None:
     trips.cache()
     n_trips = trips.count()
 
-    m6 = _read_csv(m6_csv)
-    m5 = _read_csv(m5_csv)
+    m6 = storage.read_csv_rows(m6_csv)
+    m5 = storage.read_csv_rows(m5_csv)
+    if not m6 or not m5:
+        print("no closed/exact output for scale=%s -- stages not run at this "
+              "scale; skipping." % scale)
+        spark.stop()
+        return
+
     print(f"Spark {spark.version} | trips={n_trips:,} | M6 rows={len(m6)} M5 rows={len(m5)} "
           f"| SUPPORT_TOL={SUPPORT_TOL}")
     ok = True
@@ -122,9 +122,5 @@ def main(use_sample: bool) -> None:
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--sample", action="store_true")
-    g.add_argument("--full", action="store_true")
-    args = ap.parse_args()
-    main(use_sample=args.sample)
+    args = cli.scale_parser(__doc__).parse_args()
+    main(cli.scale_of(args))

@@ -10,22 +10,21 @@ Run:
     python -m src.verify_phase1 --sample
     python -m src.verify_phase1 --full
 """
-import argparse
 from pyspark.sql import functions as F
 
+from src import cli, config, storage
 from src.spark_session import get_spark
-from src import config
 from src.load_data import load_raw
 from src.clean_data import parse_and_feature
 
 
-def main(use_sample: bool) -> None:
+def main(scale: str) -> None:
     spark = get_spark("verify-phase1")
     print(f"Spark version : {spark.version}")
 
     # ---- 1. Read the cleaned Parquet BACK (proves the write is valid) ----
-    parquet_path = config.CLEAN_PARQUET.replace(".parquet", "_sample.parquet") \
-        if use_sample else config.CLEAN_PARQUET
+    paths = config.dataset_paths(scale)
+    parquet_path = paths["clean"]
     clean = spark.read.parquet(parquet_path)
     clean_n = clean.count()
     print(f"\n=== cleaned Parquet read back: {parquet_path}")
@@ -61,7 +60,7 @@ def main(use_sample: bool) -> None:
         print(f"    {p}")
 
     # ---- 3. Recompute REJECTION REASONS from the raw input ----
-    raw_path = config.SAMPLE_CSV + "_dir" if use_sample else config.RAW_TRAIN
+    raw_path = paths["raw_csv"]
     raw = load_raw(spark, raw_path)
     raw_n = raw.count()
     df = parse_and_feature(raw)
@@ -94,9 +93,5 @@ def main(use_sample: bool) -> None:
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--sample", action="store_true")
-    g.add_argument("--full", action="store_true")
-    args = ap.parse_args()
-    main(use_sample=args.sample)
+    args = cli.scale_parser(__doc__).parse_args()
+    main(cli.scale_of(args))

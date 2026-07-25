@@ -14,15 +14,14 @@ Checks:
 Run:
     python -m src.verify_encoding --sample
 """
-import argparse
 
 import h3
 import pandas as pd
 from pyspark.sql import functions as F, types as T
 from pyspark.sql.pandas.functions import pandas_udf
 
+from src import cli, config, storage
 from src.spark_session import get_spark
-from src import config
 
 
 @pandas_udf(T.IntegerType())
@@ -37,16 +36,13 @@ def count_invalid_cells(seq_series: pd.Series) -> pd.Series:
     return pd.Series(out)
 
 
-def main(use_sample: bool) -> None:
+def main(scale: str) -> None:
     spark = get_spark("verify-encoding")
     res = config.H3_RESOLUTION
     print(f"Spark version : {spark.version}  (H3 res {res})")
 
-    enc_path = config.CLEAN_PARQUET.replace(
-        ".parquet", f"_encoded_r{res}_sample.parquet" if use_sample
-        else f"_encoded_r{res}_full.parquet")
-    feat_path = config.CLEAN_PARQUET.replace(
-        ".parquet", "_features_sample.parquet" if use_sample else "_features.parquet")
+    paths = config.dataset_paths(scale)
+    enc_path, feat_path = paths["encoded"], paths["features"]
 
     enc = spark.read.parquet(enc_path)
     enc.cache()
@@ -97,9 +93,5 @@ def main(use_sample: bool) -> None:
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--sample", action="store_true")
-    g.add_argument("--full", action="store_true")
-    args = ap.parse_args()
-    main(use_sample=args.sample)
+    args = cli.scale_parser(__doc__).parse_args()
+    main(cli.scale_of(args))

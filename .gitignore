@@ -22,3 +22,10 @@ __pycache__/
 spark-warehouse/
 metastore_db/
 derby.log
+
+# --- Spark local scratch (shuffle spill; tens of GB during a mid-scale run) ---
+.spark-tmp/
+.pytest_cache/
+
+# --- The lecturer's dataset folder (as shipped by UCI) ---
+taxi+service+trajectory+prediction+challenge+ecml+pkdd+2015/

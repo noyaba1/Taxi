@@ -42,27 +42,42 @@ We use a Bronze → Silver → Gold "medallion" layout. Each phase reads the
 previous layer and writes the next as **Parquet** (columnar, compressed,
 schema-on-read). Nothing recomputes upstream work.
 
+Filenames are built in exactly one place — `config.dataset_paths(scale)` — and
+are uniform across scales (`_sample` / `_mid` / `_full`). Six modules used to
+reconstruct them independently, and the resulting mismatch shipped once
+(commit `adf2caf`, "cloud `--full` blocker").
+
 ```
  RAW CSV (1.9 GB)                                   ── Bronze (immutable input)
    │  load_data.py (explicit schema)
    ▼
- trips_clean.parquet                                ── Silver  (Phase 1)
-   │  feature_engineering.py (Haversine, speed, bbox, anomaly)
+ trips_clean_<scale>.parquet                        ── Silver  (Phase 1)
+   │    parse POLYLINE · reject corrupt · dedupe TRIP_ID
+   │  feature_engineering.py (Haversine, speed, bbox, anomaly flags)
    ▼
- trips_features.parquet                             ── Gold-features (Phase 2)
-   │  spatial_encoding.py (H3 cell sequences, denoised)
+ trips_features_<scale>.parquet                     ── Gold-features (Phase 2)
+   │    *** anomalous trips are EXCLUDED at the next step, not just flagged ***
+   │  spatial_encoding.py (H3 cell sequences, gap-aware)
    ▼
- trips_encoded.parquet  (TRIP_ID, h3_seq_compact[], encoded_len_km)  (Phase 4)
-   │            ├──────────────┬───────────────┐
-   ▼            ▼              ▼               ▼
- routes_suffix  routes_cluster routes_graph   stats/  (Phases 3,5,6,7)
-   └──────────────┴───────────────┴───────────► evaluation + viz (Phase 8)
+ trips_encoded_r9_<scale>.parquet   (TRIP_ID, h3_seq_compact[], encoded_len_km,
+   │                                 max_hop_km)
+   │      ┌──────────┬──────────┬──────────┬──────────────┐
+   ▼      ▼          ▼          ▼          ▼              ▼
+  A       B          C          D        M5/M6/M7      anomaly
+ cluster maximal    graph    suffix     baselines +     analysis
+         frequent           array       sketches
+   └──────────┴──────────┴──────────┴──────────────┴──► evaluation + viz
 ```
+
+Reports and result CSVs go through `src/storage.py`, which writes via Hadoop FS
+for `gs://` paths — so cloud results land in GCS instead of on an ephemeral node.
 
 **Partitioning strategy.** Trajectory-level work keeps **one whole trip per
 row** (never split a trip across partitions — a route can cross the city).
-The only large shuffle is *counting* in the mining phases; we attack that with
-map-side combine, salting, and sketches (§7).
+The large shuffle is *counting* in the mining phases. Measured: the exhaustive
+window path emits 33.6M rows at 200k trips and OOMs on 16 GB, while the suffix
+array indexes the same data as 2.8M suffixes in 26 s. So the suffix array is the
+exact path at scale and the window miners are sample-scale ground truth (§7).
 
 ---
 

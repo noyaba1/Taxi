@@ -1,329 +1,299 @@
-# Porto Taxi Route Mining — Final Engineering Report
+# Porto Taxi Route Mining — Engineering Report
 
-Big Data / Cloud Computing course project. Branch `Noya`. This report is written
-to be graded and defended. All numbers are **measured on the validated 5,000-trip
-sample** unless stated; the full 1.71M / DataProc run is prepared but is the
-group's to execute (budget-gated).
+Big Data / Cloud Computing final project. Every number below is **measured**, and
+says which scale it came from. Nothing in this document is hard-coded prose: the
+generated reports under `outputs/statistics/` are the source, and they are
+rebuilt by `python -m src.run_pipeline --sample --verify`.
 
----
-
-## 1. Executive summary
-
-We built a complete, reproducible PySpark pipeline that ingests the Porto Taxi
-trajectory dataset (1,710,670 trips), cleans it, engineers trip features, encodes
-each trajectory as a sequence of **H3** cells, and then discovers **popular long
-sub-routes**, **activity zones**, and **anomalous routes** using **three
-independent method families** plus **approximate (sketch) optimisation**:
-
-- **Method B (suffix/frequent):** exact n-gram mining, closed/maximal mining, and
-  the PDF-faithful **min-support X% + maximal** miner that reproduces the
-  assignment's "holes" phenomenon.
-- **Method A (clustering):** MinHash-LSH on directed bigram shingles + greedy star
-  clustering.
-- **Method C (original):** a directed **transition graph** — PageRank activity
-  zones + dominant-flow **heavy paths** validated against real trips.
-- **Approximate structures:** Space-Saving + Count-Min (top-k), `approxQuantile`
-  (anomaly fences), MinHash-LSH (clustering) — each compared to exact.
-
-Every stage has an **independent verifier**; three real bugs were caught by those
-verifiers and fixed (clustering chaining, graph Frankenstein routes, anomaly
-fence collapse). The design was **audited mid-project** and one core algorithmic
-framing was corrected (top-k-by-support → min-support+maximal) so the output
-matches the lecturer's definition rather than a proxy.
-
-**State:** 100% of the assignment's method/analysis requirements are implemented
-and validated on the sample; DataProc/GCS execution is scripted and documented,
-awaiting the group's cloud run.
+Scales used: **sample** = 5,000 trips (4,745 after cleaning), **mid** = 200,000
+trips (188,761 after cleaning), **full** = 1,710,670 trips (DataProc).
 
 ---
 
-## 2. Final architecture
+## 1. What the assignment asks for, and where it is
 
-Medallion pipeline; every stage reads/writes **Parquet**; all paths flow through
-`config.py` (the cloud switch). See `docs/ARCHITECTURE.md` for full detail.
+| Requirement | Where |
+|---|---|
+| Upload to GCS, run on DataProc with ≥5 machines | `scripts/dataproc_submit.sh` (1 master + 5 workers) |
+| Clean corrupt data | `clean_data.py` + `feature_engineering.py` flags + `spatial_encoding.py` exclusion + per-window hop guard |
+| Derive points / duration / distance | `clean_data.py`, `feature_engineering.py` |
+| Documented DataFrame + basic statistics | `summarize_features.py` → `phase2_feature_summary_*.md` |
+| Spatial encoding, grid choice justified | `spatial_encoding.py --compare-grids` → `grid_comparison_*.md` |
+| Top-100 long sub-routes at ≥1/3/5/10/20/40 km | all four miners, `outputs/routes/*_top100_*.csv` |
+| ≥X% support, maximising length | `route_mining_maximal.py` — X calibrated **per length config** |
+| The "holes" (corridors fragmenting at forks) | `route_mining_maximal.py` holes section |
+| A clustering method | `route_mining_clustering.py` (Method A) |
+| A **suffix tree / suffix array** method | `route_mining_suffix_array.py` (Method D) |
+| A method that is neither | `route_mining_graph.py` (Method C) |
+| Hash-based approximate structures | MinHash-LSH, Space-Saving, Count-Min, GK quantiles |
+| Method comparison: runtime, accuracy, memory | `evaluation.py` → `method_comparison_*.md` |
+| Map demo under Colab Enterprise | `notebooks/porto_routes_colab.ipynb`, all six configs |
+| Popular routes / activity zones / anomalies | Methods A–D / `route_mining_graph` / `anomaly_analysis` |
+
+---
+
+## 2. Architecture
 
 ```
 raw CSV (1.9 GB)
-  → clean_data            (Phase 1)  trips_clean
-  → feature_engineering   (Phase 2)  + distance/speed/bbox/anomaly flags
-  → spatial_encoding      (Phase 4)  h3_seq_compact (H3 res 9)
-  → Method B: route_mining_exact / _suffix / _approx / _maximal
-    Method A: route_mining_clustering
-    Method C: route_mining_graph (+ activity zones)
-    anomaly_analysis
-  → evaluation (A vs B vs C) · visualization (Folium/Colab)
+  → clean_data           parse, reject corrupt, dedupe TRIP_ID
+  → feature_engineering  distance/speed/sinuosity/bbox + anomaly flags
+  → summarize_features   distribution statistics
+  → spatial_encoding     H3 res-9 sequences; anomalous trips EXCLUDED
+  → A clustering | B maximal-frequent | C graph | D suffix array
+    + M5/M6 exhaustive baselines (sample only) + M7 sketches
+    + anomaly_analysis
+  → evaluation (A/B/C/D) · visualization (Folium / Colab)
 ```
 
-Central idea: after encoding, **a trip is a string over an H3-cell alphabet**, so
-a sub-route is a contiguous substring, "popular" = support, "long" = ground
-length ≥ L. This one representation feeds all three methods.
+Every path flows through `config.dataset_paths(scale)`; every report and CSV
+flows through `src/storage.py`, which writes via Hadoop FS when the path has a
+URI scheme. Those two facts are what make `SPARK_ENV=cloud DATA_BASE=gs://…
+OUTPUT_BASE=gs://…` the entire cloud migration.
+
+**Core idea:** after encoding, a trip is a *string over an H3-cell alphabet*. A
+sub-route is a contiguous substring, "popular" is distinct-trip support, "long"
+is ground length ≥ L. One representation feeds all four methods, which is what
+makes cross-method comparison meaningful.
 
 ---
 
-## 3. Milestones in chronological order
+## 3. The four methods (sample scale, ≥3 km config)
 
-| # | Milestone | Main output | Key validation | Commit |
-|---|-----------|-------------|----------------|--------|
-| Setup | Java 11 / Py 3.11 / Spark 3.5.1; Windows fixes | working env | `validate_env` all OK | `567f46b` |
-| P1 | Clean & parse | `trips_clean` | 4,867/5,000 valid (97.3%) | `fe016f4`… |
-| P2 | Features (Arrow `pandas_udf`) | features parquet | speed/dist sane; read-back | `fe016f4` |
-| M3 | H3 encoding + res sweep | `h3_seq_compact` | 0 invalid cells; compact≤raw | `09a5569` |
-| M5 | Exact n-gram mining | top-100/threshold | brute-force support match | `76b6557` |
-| M6 | Maximal (closed) | 24,323 maximal | 0 dominated routes | `cfee222` |
-| M7 | Approximate (SS+CMS) | approx top-k + metrics | bounds bracket exact; determinism | `75fb285` |
-| M8 | Min-support X% + maximal (PDF) | maximal-frequent + holes | frequent∧maximal proven | `9a793c9` |
-| M9 | Method A clustering | 183 clusters | coherence ≈1.0 (bug fixed) | `d162468` |
-| M10 | Method C graph + zones | 899 corridors, 50 zones | support match; anti-Frankenstein | `492e35a` |
-| M11 | Anomalous routes | 5 detectors | score==Σdetectors; semantics | `91d0996` |
-| M16 | A vs B vs C comparison | overlap matrix | — | `83e34dd` |
-| M15 | Map + Colab notebook | interactive HTML | 75 routes/100 markers | `003ca7e` |
-| M12 | Unit tests + orchestrator | 11 tests, `run_pipeline` | tests green | `5f970e1` |
-| M14 | DataProc/GCS + `gs://` fix | deploy guide+script | paths gs://-safe | `d5b8e65` |
-
----
-
-## 4. Algorithms & why chosen over alternatives
-
-| Choice | Chosen | Rejected (why) |
-|---|---|---|
-| Grid | **H3 res 9** | Geohash (edge effects), S2/HEALPix (no measurable gain, more complex). Res justified by 15 s/50 km/h geometry + sweep. |
-| Sub-route model | **contiguous n-grams** | PrefixSpan/gapped — a gap = a teleport the taxi never made; also more expensive. The PDF's "holes" are *breaks between* contiguous routes, not gaps within one. |
-| Popular-route def | **min-support X% + maximal** | top-k-by-support (a proxy that hides X and length maximisation — corrected after the audit). |
-| Feature compute | **Arrow `pandas_udf`** | `explode` (50× rows + shuffle). |
-| Top-k at scale | **Space-Saving (+ Count-Min)** | exact groupBy (810k-key shuffle); Count-Min alone (no key inventory → can't find heavy hitters). |
-| Clustering | **MinHash-LSH + star clustering** | connected-components (chained a 137-trip blob, coherence 0.02 → replaced); TraClus/DBSCAN (don't distribute). |
-| Graph routes | **dominant-flow heavy paths + validation** | heaviest-edge greedy (Frankenstein: 24/1121 validated) → dominant-flow (899/1473). |
-| Anomaly fences | **`approxQuantile` on normal subset** | p99 over all trips (outliers set their own fence → flagged nothing). |
-| Connected comp / PageRank | **Spark-native (LPA/power iteration)** | GraphFrames (Windows setup cost not justified at this scale). |
-
----
-
-## 5. Validation methodology
-
-Every stage ships a `verify_*.py` that recomputes results by an **independent
-method** and cross-checks:
-- support via **brute-force substring containment** (vs the window-emit/groupby);
-- clustering **coherence** via brute-force Jaccard to the representative;
-- graph routes via containment (anti-Frankenstein); zone geometry sanity;
-- sketch **bounds** (Space-Saving `[lb,ub]` brackets truth; Count-Min ≥ truth) and
-  **determinism** (two builds → identical top-k);
-- anomaly **self-consistency** (score == Σ detectors; each detector's semantics).
-- **Unit tests** (`pytest`, 11) on the pure functions where bugs hid.
-
-No milestone was "done" until its verifier printed PASSED.
-
----
-
-## 6. Benchmark results (5k sample, local `local[*]`)
-
-| Stage | Wall time | Key size |
-|---|---|---|
-| M5 exact | ~52.6 s | 1,088,976 windows → 810,933 distinct routes |
-| M6 maximal | ~65 s | → 24,323 (3.0% kept) |
-| M7 approx | ~11 s | memory 388 MB → **101 MB fixed**; shuffle 1.08M vs 2 bundles |
-| M8 min-support maximal | ~43 s | 314 maximal-frequent @ X=0.5% |
-| M9 clustering | ~24 s | 2,451 edges → 183 clusters |
-| M10 graph | ~30 s | 2,933 nodes/7,175 edges → 899 corridors, 50 zones |
-
-Data facts: full file **1,710,670** trips; sample 5,000 → **4,867 valid** (101
-too-few-points, 32 outside bbox). Feature medians: 4.0 km, 10.25 min, 23.7 km/h,
-sinuosity 1.45.
-
----
-
-## 7. Spark performance analysis
-
-- **Narrow (scale well):** cleaning, features (`pandas_udf`, zero shuffle),
-  encoding, PageRank contributions.
-- **Wide (watch):** the M5/M6/M8 window `groupBy` — the #1 full-scale cost
-  (~260M rows × long string keys at 1.71M). Mitigations designed & documented
-  (hash keys, salting, sketches).
-- **Skew:** downtown cells are hot keys; AQE skew-join is on; sketches remove
-  per-key reducers entirely.
-- **Lineage:** iterative CC/PageRank use `localCheckpoint` to avoid lineage OOM
-  (learned the hard way — the first clustering run OOM'd).
-- **Driver-side steps:** M9/M10 collect the *pruned* graph to the driver (capped);
-  distributed CC/beam documented for full scale.
-
-Predicted #1 bottleneck at 1.71M: the exact-mining shuffle — which is exactly why
-the approximate method (M7) exists and why the scale-hardening checklist targets
-it (`docs/DATAPROC.md` §8).
-
----
-
-## 8. Approximate vs exact
-
-Space-Saving (primary top-k) + Count-Min (frequency oracle), built per-partition
-and merged — **no big key shuffle**. Measured vs the exact top-100:
-
-| min_len | precision@100 | SS support MAE | memory | shuffle |
+| | approach | routes | top support | longest |
 |---|---|---|---|---|
-| 1 km | 1.00 | 0.1 | **101 MB fixed** vs 388 MB | **2 bundles** vs 1,088,976 rows |
-| 3 km | 0.92 | 0.9 | (constant regardless of N) | |
-| 5 km | 0.63 | 3.9 | | |
-| ≥10 km | 0.00* | — | | |
+| **A** clustering | MinHash-LSH on directed bigram shingles → greedy star clustering → longest cell run shared by ≥60% of members | 100 | 60 | 10.56 km |
+| **B** maximal-frequent | n-gram support table → maximal among routes clearing X%, X calibrated per length | 99 | 20 | 6.89 km |
+| **C** transition graph | PageRank zones + dominant-flow heavy paths, validated against trips | 65 | 43 | 7.29 km |
+| **D** suffix array | generalised suffix array + LCP intervals | 95 | 60 | 5.05 km |
 
-*sample-sparsity tie artifact (support ≈ 1), resolves on full data. Bounds
-verified (SS `[lb,ub]` ⊇ truth; CMS ≥ truth); output deterministic. The sketches
-turn skew from a liability into an asset (tight bounds on hot keys).
+All four report the same unit — a contiguous sub-route with a distinct-trip
+support — so these columns are directly comparable.
+
+### Cross-method agreement (≥3 km, cell-set Jaccard ≥ 0.5)
+
+| row→col | A | B | C | D |
+|---|---|---|---|---|
+| **A** | 1.00 | 0.64 | 0.31 | 0.39 |
+| **B** | 0.61 | 1.00 | 0.59 | 0.67 |
+| **C** | 0.34 | 0.62 | 1.00 | 0.42 |
+| **D** | 0.60 | **0.99** | 0.82 | 1.00 |
+
+**D→B = 0.99** is the headline: a suffix array walking LCP intervals and an
+n-gram support table with a maximality join are completely different algorithms,
+and 99% of D's corridors have a partner in B's. Their *supports* also agree
+exactly — 0 disagreements across all 174 routes both report (`verify_*`). That is
+the strongest evidence available that these corridors are real rather than
+artefacts of one method's bias.
+
+A→C = 0.31 is the weakest pair, and honestly so: whole-trajectory clustering and
+dominant-flow graph walks optimise different things.
 
 ---
 
-## 9. Method A vs B vs C
+## 4. Cost (sample scale, `local[*]`, 8 cores / 16 GB)
 
-| | A clustering | B maximal-frequent | C transition-graph |
+Measured, from `outputs/statistics/timings.jsonl`:
+
+| stage | wall | peak RSS | work volume |
 |---|---|---|---|
-| Unit of popularity | cluster size | trip support | trip support |
-| Top popularity (1 km) | 28 | 46 | **120** |
-| Longest route | **13.2 km** | 5.4 km | 7.3 km |
-| Strength | long end-to-end corridors | PDF-exact, holes | busy short corridors + zones |
-| Weakness | coarse, driver-side CC at scale | O(n²) shuffle | over-extends w/o flow guard |
-
-**Cross-method overlap (≥3 km, Jaccard-match fraction):** B↔C agree strongly
-(B→C **0.80**), B mostly inside A (B→A **0.77**). High B↔C agreement is strong
-mutual evidence both find *real* corridors; A's broader clusters explain the
-lower A→B/C. Three genuinely different lenses that corroborate each other.
+| M3 encoding (+ grid sweep) | 40.6 s | 100 MB | 4,745 trips encoded |
+| M8 maximal-frequent | 32.7 s | 46 MB | 636,081 distinct sub-routes |
+| M10 graph | 18.8 s | 50 MB | 1,852 nodes / 5,209 edges |
+| M7 approx vs exact | 13.0 s | 692 MB | 916,815 windows |
+| M6 closed | 12.0 s | 47 MB | 636,081 → 22,045 closed |
+| **M12 suffix array** | **9.0 s** | 100 MB | **72,271 suffixes** → 1,514 maximal |
+| M9 clustering | 7.9 s | 106 MB | 2,320 edges → 177 clusters |
+| M5 exact baseline | 7.5 s | 45 MB | 916,815 windows → 636,081 keys |
 
 ---
 
-## 10. Remaining limitations
+## 5. Scalability: the finding that shaped the design
 
-1. **Sample-only validation.** Everything is proven on 5k trips; ≥10 km routes and
-   higher X% need the full 1.71M (documented; the pipeline is ready).
-2. **DataProc/GCS not yet executed** (budget-gated; scripted in `docs/DATAPROC.md`).
-3. **Exact miner not scale-hardened** (cum_km/hashed keys deferred — rejected as
-   premature on the sample; checklist ready).
-4. **A/C collect a pruned graph to the driver** (capped); distributed CC/beam for
-   full scale documented, not built.
-5. **Ground-truth accuracy** (`solution_*.csv`) not yet used to quantify route/ETA
-   quality (high-value next step).
-6. **Logging is `print`-based; no CI.**
+The exhaustive window miner emits every contiguous window of every trip —
+O(n²) in cells per trip. Measured:
 
----
-
-## 11. Risks
-
-| Risk | Likelihood | Mitigation |
+| | 4,745 trips | 188,761 trips |
 |---|---|---|
-| Full-scale exact-mining shuffle OOM/slow | Med-High | scale-hardening checklist; lean on sketches |
-| $50 budget overrun | Low | `--max-idle`, auto-delete trap, sample-first debugging |
-| Driver-side A/C collect too large at 1.71M | Med | `EDGE_COLLECT_CAP` guard; distributed fallback documented |
-| Cloud path/env drift | Low | `gs://`-safe join + `SPARK_ENV=cloud` verified logically |
-| Non-ASCII/Windows only issues | Low | all guarded by `os.name=='nt'`, no-op on cluster |
+| exhaustive windows emitted | 916,815 | **33,597,872** |
+| M5 exact (window + groupBy) | 7.5 s | **OOM — Java heap space** |
+| M7 sketches (streaming, no shuffle) | 13.0 s | **71.9 s, 66 MB fixed** |
+| **M12 suffix array** | **9.0 s** (72,271 suffixes) | **26.0 s** (2,808,406 suffixes) |
+
+So at 12% of the full dataset, on this machine, the exhaustive baseline already
+dies while the suffix array finishes in 26 seconds — and the suffix array is
+**exact**, not an approximation. Its bucketing argument is what buys that: every
+occurrence of a sub-route of ≥3 cells starts at a suffix sharing its first 3
+cells, so all occurrences land in one partition and per-partition counting needs
+no cross-partition merge.
+
+Consequences, applied throughout:
+
+- M5/M6 run at `--sample` only, as ground truth for the others.
+  `route_mining_exact` **refuses to start** above `EXACT_MAX_TRIPS` with an
+  explanatory message, rather than dying an hour into a paid cluster run.
+- M7 streams its input rather than caching it (caching to count the rows is what
+  made the "cheap" method OOM before the exact one) and takes `--approx-only`.
+- `run_pipeline` selects stages per scale; `dataproc_submit.sh` mirrors it.
+- Method C validates 3,000 candidates against every trip with one Aho-Corasick
+  pass per trip instead of 3,000 substring scans per trip.
 
 ---
 
-## 12. Future work
+## 6. Correctness
 
-1. Run full local + **DataProc 5-node** and record scaling curves (fill in §6/§8).
-2. Apply the **scale-hardening** checklist and measure the delta.
-3. Use **ground truth** (`solution_challengeII/fixed.csv`) for quantitative
-   destination/ETA accuracy.
-4. Distributed CC (GraphFrames LPA) for A; Pregel/beam for C at scale.
-5. **HLL distinct-taxi** support (a route by 200 taxis ≠ 1 taxi ×200); **T-Digest**
-   in the stats phase.
-6. Slide deck; execute the Colab notebook against gs://.
+### Cleaning removes corrupt data rather than labelling it
 
----
+Sub-route length is measured between cell centres, so a window spanning a GPS gap
+reports the gap's width as route length. Measured on the sample **without** the
+guard:
 
-## 13. Git history summary
-
-24 commits on `Noya`, each a self-contained, mergeable milestone (source/docs
-only — no data/parquet/logs/`.venv` ever committed; verified every commit).
-Highlights: env+P1 (`567f46b`), architecture+design-review (`a3a3892`,`a38a0eb`),
-Method B exact/maximal/approx (`76b6557`,`cfee222`,`75fb285`), **audit-driven
-X%+maximal** (`9a793c9`), Method A (`d162468`), Method C (`492e35a`), anomalies
-(`91d0996`), comparison (`83e34dd`), viz (`003ca7e`), tests+runner (`5f970e1`),
-DataProc+gs:// fix (`d5b8e65`). One history rewrite early on removed stray
-co-author trailers (`git filter-branch`, force-with-lease).
-
----
-
-## 14. Repository structure
-
-```
-src/    29 modules: config, spark_session, load_data, make_sample, clean_data,
-        feature_engineering, spatial_encoding, route_mining_{exact,suffix,approx,
-        maximal,clustering,graph}, anomaly_analysis, evaluation, visualization,
-        run_pipeline, validate_env, + a verify_*.py per stage
-tests/  pytest unit tests (pure functions)
-docs/   ARCHITECTURE, DESIGN_REVIEW, DATAPROC, TEAM_HANDOFF_HE, FINAL_REPORT
-scripts/ dataproc_submit.sh
-notebooks/ porto_routes_colab.ipynb
-README.md, SETUP.md, requirements.txt, .gitignore
-data/ outputs/  (GIT-IGNORED — regenerated)
-```
-Tracked = source + docs only. Data, Parquet, logs, generated CSV/MD, `.venv` are
-git-ignored and reproduced by `python -m src.run_pipeline --sample`.
-
----
-
-## 15. How to run locally
-
-```powershell
-py -3.11 -m venv .venv; .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt        # Java 11 + winutils: see SETUP.md
-python -m src.validate_env             # env smoke test
-python -m src.make_sample 5000         # build 5k sample from train.csv
-python -m src.run_pipeline --sample --verify   # whole pipeline + all verifiers
-python -m pytest tests/ -q             # unit tests
-```
-Open `outputs/maps/porto_map_sample.html` for the interactive map.
-
-## 16. How to run on GCP DataProc
-
-Full procedure in `docs/DATAPROC.md`: upload data+code to GCS, `bash
-scripts/dataproc_submit.sh` (creates a 1-master+4-worker cluster, submits every
-stage with `SPARK_ENV=cloud DATA_BASE=gs://…`, auto-deletes the cluster). The
-only code switch is two env vars; `config.storage_join` keeps `gs://` intact.
-
----
-
-## 17. Presentation & defense preparation
-
-**Must-show demos:** (1) the **map** (routes A/B/C + zones + anomalies, toggleable);
-(2) the **holes** fork (support 46 → branches 24 & 20, each < X%); (3) the
-**approx-vs-exact** table (precision 1.00/0.92 with 3.8× memory + shuffle 1.08M→2);
-(4) the **A/B/C overlap** matrix (B↔C 0.80).
-
-| Likely question | Answer |
-|---|---|
-| "Where is the X% and length maximisation?" | `config.SUPPORT_X_PCT` + M8 maximal-frequent; sweep report; holes demo. |
-| "Why H3 not S2/Geohash?" | uniform hex adjacency models movement; res 9 from 15 s/50 km/h + sweep. |
-| "Why contiguous not PrefixSpan?" | gaps = teleports; PDF holes are breaks *between* contiguous routes. |
-| "Prove the approximation error." | SS `[lb,ub]` ⊇ truth, CMS ≥ truth, determinism — all verified. |
-| "Which method is best?" | none dominates: B=exact/holes, C=busy corridors+zones, A=long corridors; B↔C corroborate. |
-| "Does it run on 5 machines?" | scripted + gs://-safe; the one honest gap — not yet executed. |
-| "How do you know it's correct?" | independent verifiers per stage + unit tests; 3 bugs caught this way. |
-
-**Strengths:** correctness discipline (independent verification caught real bugs),
-PDF-faithful definition, honest approximate comparison, three corroborating
-methods, clean cloud-ready architecture.
-**Weak points to pre-empt:** no full/cloud numbers yet; exact miner unhardened;
-ground truth unused. Frame these as *scoped, documented next steps*, not gaps.
-
----
-
-## 18. Self-review & scores
-
-Graded as if by an examiner; each score notes what capped it.
-
-| Category | Score | What prevented a perfect score |
+| | before | after |
 |---|---|---|
-| Correctness | 9/10 | Independently verified everywhere; −1: full-scale parity not yet demonstrated. |
-| Architecture | 9/10 | Clean medallion + working cloud switch; −1: cum_km/int-cell drift deferred. |
-| Spark engineering | 8/10 | Good pandas_udf/cache/AQE/localCheckpoint; −2: exact O(n²)+string keys unhardened, some driver-side collects. |
-| Scalability | 7/10 | Sketches + distributed design; −3: not demonstrated beyond 5k; A/C driver-side steps. |
-| Documentation | 9/10 | ARCHITECTURE/DESIGN_REVIEW/DATAPROC/handoff/this; −1: cosmetic lint, no API docs. |
-| Innovation | 8/10 | String reframe, holes, dominant-flow graph, mutual method validation; −2: nothing radically novel; ground truth unused. |
-| Software engineering | 8/10 | Verifiers, unit tests, orchestrator, modular, gs://-safe; −2: no CI, print logging, unit coverage = pure fns only. |
-| Presentation readiness | 8/10 | Map, comparison, reports, notebook; −2: no slide deck; Colab not executed here. |
-| Defense readiness | 8/10 | Deep docs + Q&A + demos; −2: can't yet show full/cloud numbers. |
+| worst km per cell-hop in any window | **53.63 km** (45× the physical bound) | 1.10 km |
+| windows ≥10 km built across a gap | **563** | **0** |
+| worst example | 59.8 km claimed from 19 cells (3.3 km/hop) | — |
 
-**Overall: a strong, honest, top-tier-trajectory project.** Its distinguishing
-quality is not volume of code but **engineering discipline**: an audit that
-corrected the core definition, independent verification that caught three real
-bugs, and explicit rejection of complexity (S2, GraphFrames, premature
-scale-hardening) that lacked measurable benefit. The clear path to a top grade is
-mechanical, not conceptual: run the full/DataProc pass, add ground-truth accuracy,
-and build the slide deck.
+Those 563 windows would have landed directly in the graded ≥10/20/40 km lists.
+The guard has two layers: anomalous trips (teleport, >200 km/h, parked, off-map)
+are excluded before encoding, and every miner splits trajectories at any hop
+above `config.max_cell_hop_km()` — derived as *retained-speed limit ×
+sample interval + 2 × cell circumradius* = 1.18 km at res 9, not a tuned constant.
+
+Both layers agree: after excluding anomalous trips, **0** encoded trips still
+contain a hop above the bound.
+
+### Independent verification
+
+Every stage has a `verify_*.py` that recomputes its result a different way:
+
+- support by brute-force substring containment vs the mining's window/groupBy or
+  Aho-Corasick path — matches exactly, including for Method A's new sub-routes;
+- suffix array vs exhaustive baseline: **0 support disagreements** over 174
+  shared routes;
+- Space-Saving `[lb,ub]` brackets the true support and Count-Min never
+  underestimates, on every sampled route; two builds give identical top-k;
+- clustering cohesion, route continuity, graph anti-"Frankenstein", anomaly
+  self-consistency.
+
+Plus **36 unit tests**, including brute-force cross-checks of the LCP-interval
+enumeration (8 cases) and the Aho-Corasick automaton (400 randomised trials), and
+a regression test that a window may never span a GPS gap.
+
+---
+
+## 7. Approximate vs exact (sample)
+
+| min_len | precision@100 | recall@100 | SS support MAE |
+|---|---|---|---|
+| 1 km | 0.98 | 0.98 | 0.1 |
+| 3 km | 0.93 | 0.93 | 0.6 |
+| 5 km | 0.82 | 0.82 | 1.5 |
+| ≥10 km | ~0 | ~0 | — |
+
+Memory: **83.6 MB fixed** (sketch capacity) vs 275 MB estimated for the exact key
+table, and **8 sketch bundles** crossing the network vs 916,815 shuffled rows.
+
+The ≥10 km rows are a genuine sample artefact, not a sketch failure: at 4,745
+trips almost every route that long has support 1, so "top-100" is an arbitrary
+choice among thousands of ties and any two methods disagree. It resolves with
+scale, which is exactly what the mid/full runs are for.
+
+---
+
+## 8. Choosing the grid (measured, not asserted)
+
+From `grid_comparison_sample.md`:
+
+| grid | res | cell m | avg cells | len_ratio | distinct cells | bearing entropy |
+|---|---|---|---|---|---|---|
+| h3 | 8 | 461 | 7.8 | 1.228 | 416 | 1.176 |
+| **h3** | **9** | **174** | **17.2** | **1.167** | **1,853** | **0.939** |
+| h3 | 10 | 66 | 29.6 | 1.070 | 6,821 | 0.749 |
+| geohash | 6 | 610 | 9.3 | 1.178 | 571 | 1.016 |
+| geohash | 7 | 76 | 29.4 | 1.074 | 6,638 | 0.730 |
+
+`bearing_entropy` is the conflation measure the brief's warning actually
+describes: the entropy of travel directions leaving a cell. A cell on one road
+sees one or two directions; a cell that has swallowed two parallel roads sees
+several. Lower is better.
+
+Two honest readings:
+
+1. **Res 9 is a compromise, not an optimum.** Res 10 conflates less (0.749 vs
+   0.939) but costs 3.7× the alphabet and 1.7× the sequence length — and since
+   sub-route keys are *sequences* of cells, that multiplies the mining key space
+   superlinearly.
+2. **These metrics do not by themselves justify H3 over geohash.** At comparable
+   cell sizes the two score about the same. The reason to prefer H3 is
+   structural: hexagons have six equidistant neighbours, so a trajectory is a walk
+   with uniform step cost, whereas geohash rectangles have edge and corner
+   neighbours at different distances and distort with latitude — which matters
+   when route length is a sum of cell-to-cell hops.
+
+---
+
+## 9. X% calibrated per length configuration
+
+A single global X cannot serve all six length configs. Maximal-frequent routes
+are already the longest stretches clearing X, so filtering them at 40 km does not
+*find* 40 km routes — it asks whether the one chosen X happened to produce any.
+At X=0.5% on 1.71M trips a 40 km corridor would need ~8,500 distinct trips over
+the same unbroken stretch.
+
+So for each L we take the largest X whose maximal-frequent set still yields 100
+routes at that length. On the sample:
+
+| min_len | X% used | min_sup | routes | longest |
+|---|---|---|---|---|
+| 1 km | 1.0 | 48 | 130 | 3.61 km |
+| 3 km | 0.2 | 10 | 193 | 6.89 km |
+| 5 km | 0.1 | 5 | 111 | 8.36 km |
+| 10 km | 0.01 | 2 | 13 | 11.99 km |
+| 20 km | 0.01 | 2 | **0** | — |
+| 40 km | 0.01 | 2 | **0** | — |
+
+The X sweep shows the mechanism directly: as X falls 5.0% → 0.01%, the longest
+maximal-frequent route grows 1.10 km → 11.99 km.
+
+**The two empty configs are a reported finding, not a silent gap.** At the
+loosest possible floor (2 trips), no 20 km contiguous stretch on 4,745 trips is
+driven twice. That is a property of sample size; the report says so explicitly
+and the full run is what settles it.
+
+---
+
+## 10. Honest limitations
+
+1. **The full 1.71M DataProc run has not been executed.** Everything is validated
+   at 5k and exercised at 200k on one machine. The cloud path is scripted and
+   the storage layer is `gs://`-aware, but it is untested against real GCS.
+2. **≥20/40 km configs are empty at sample scale** (§9) and need the full data.
+3. **Method A clusters a capped subset** (`CLUSTERING_MAX_TRIPS = 50,000`)
+   because the LSH self-join grows quadratically. Its `support` is measured on
+   all trips, but `cluster_size` is a sample statistic; the report says so.
+4. **Methods A and C collect a pruned graph to the driver.** Bounded by
+   `EDGE_COLLECT_CAP`, but a distributed community detection would be needed
+   beyond that.
+5. **The ground-truth files** (`solution_*.csv`) are resolved by `config.py` but
+   unused — no destination/ETA accuracy study.
+6. **The suffix array truncates suffixes at 200 cells** (~60 km), matching the
+   window cap. Corridors longer than that are out of scope by construction.
+
+---
+
+## 11. How to reproduce
+
+```bash
+.venv/bin/python -m src.validate_env
+.venv/bin/python -m src.make_sample --sample
+.venv/bin/python -m src.run_pipeline --sample --verify   # 14 stages + 9 verifiers
+.venv/bin/python -m pytest tests/ -q                     # 36 tests
+
+.venv/bin/python -m src.make_sample --mid                # 200k
+.venv/bin/python -m src.run_pipeline --mid               # scale behaviour
+```
+
+Cloud: set `PROJECT` and `BUCKET`, then `bash scripts/dataproc_submit.sh`.
+Do a `SCALE=--sample` cloud rehearsal on a 2-worker cluster first — it costs
+cents and proves the GCS path end to end before the full run.

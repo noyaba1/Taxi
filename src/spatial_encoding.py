@@ -3,10 +3,30 @@ spatial_encoding.py  --  PHASE 4 / Milestone M3
 ================================================
 Convert each trip's GPS trajectory into an ordered sequence of H3 cells.
 
-WHY H3 (vs Geohash/S2): hexagons have uniform neighbour distance, so a route is
-a clean walk on the grid with no diagonal/orthogonal distortion. See
-docs/DESIGN_REVIEW.md section 1-2. Resolution 9 (~174 m edge) is justified by the
-sampling geometry: a taxi at ~50 km/h moves ~210 m per 15 s ~= one res-9 cell.
+WHY H3 (vs Geohash/S2): hexagons have SIX EQUIDISTANT neighbours, so a trajectory
+is a walk with uniform step cost. Geohash rectangles have neighbours at two
+different distances (edge vs corner) and distort with latitude, which matters
+here because route length is measured by summing cell-to-cell hops.
+
+That is a structural argument, and `--compare-grids` is honest about its limits:
+on entropy and length-fidelity, geohash at a comparable cell size scores about
+the same as H3. The measurements do not by themselves pick a grid; they pick a
+RESOLUTION, and they show res 9 is a deliberate compromise (res 10 conflates less
+but costs ~3.7x the alphabet) rather than an optimum. See the generated
+outputs/statistics/grid_comparison_*.md.
+
+CORRUPT TRIPS ARE DROPPED HERE
+------------------------------
+Phase 2 flags trips whose trajectory is physically impossible (GPS teleport,
+>200 km/h segment, parked, or wandering outside the metro box). Those flags used
+to be computed and then ignored, so a trajectory containing a single GPS jump was
+encoded anyway -- and because sub-route length is measured between consecutive
+CELL CENTRES, a two-cell window spanning that jump measures 10-45 km and lands
+straight in the top-100 list for the >=10/20/40 km configurations. We exclude
+them (config.EXCLUDE_ANOMALOUS) and report exactly how many, per reason.
+
+The anomaly STUDY (M11) still runs on the unfiltered feature table -- dropping
+outliers from the route mining and analysing them are different jobs.
 
 OUTPUT per trip:
     h3_seq_raw        one cell per GPS point (order preserved)
@@ -15,14 +35,16 @@ OUTPUT per trip:
     n_cells_compact   len(compact)
     compression_ratio raw / compact (how much idling/dwelling we collapsed)
     encoded_len_km    sum of Haversine between consecutive COMPACT cell centres
+    max_hop_km        largest gap between consecutive compact cells (a residual
+                      corruption detector: a clean trajectory never exceeds
+                      config.max_cell_hop_km())
 
 NOTE: POLYLINE points are [lon, lat]; H3 wants (lat, lon) -> we pass p[1], p[0].
 
 Run:
-    python -m src.spatial_encoding --sample          # encode at res 9 + sweep
+    python -m src.spatial_encoding --sample                  # encode at res 9
+    python -m src.spatial_encoding --sample --compare-grids  # + H3/geohash sweep
 """
-import argparse
-import os
 from datetime import datetime, timezone
 
 import h3
@@ -30,10 +52,15 @@ import pandas as pd
 from pyspark.sql import functions as F, types as T
 from pyspark.sql.pandas.functions import pandas_udf
 
+from src import cli, config, storage
+from src.feature_engineering import FLAG_COLS
 from src.spark_session import get_spark
-from src import config
 
 SWEEP_RESOLUTIONS = [8, 9, 10]
+# Geohash precisions whose cell size brackets H3 res 8-10 (~1.2 km and ~150 m).
+SWEEP_GEOHASH = [6, 7]
+
+log = cli.setup_logging("encode")
 
 # Struct returned by the per-trip encoder. Built per-resolution by the factory.
 _ENC_SCHEMA = T.StructType([
@@ -43,6 +70,7 @@ _ENC_SCHEMA = T.StructType([
     T.StructField("n_cells_compact", T.IntegerType()),
     T.StructField("compression_ratio", T.DoubleType()),
     T.StructField("encoded_len_km", T.DoubleType()),
+    T.StructField("max_hop_km", T.DoubleType()),
 ])
 
 
@@ -57,8 +85,29 @@ def _compact(seq):
     return out
 
 
-def make_encoder_udf(resolution: int):
-    """Return a pandas_udf bound to a specific H3 resolution (for the sweep)."""
+def _h3_cells(pts, resolution):
+    """p = [lon, lat] -> geo_to_h3(lat, lon, res)."""
+    return [h3.geo_to_h3(p[1], p[0], resolution) for p in pts]
+
+
+def _geohash_cells(pts, precision):
+    """Geohash baseline for the grid comparison (rectangles, not hexagons)."""
+    import geohash
+
+    return [geohash.encode(p[1], p[0], precision) for p in pts]
+
+
+def _cell_centre(cell, grid):
+    if grid == "h3":
+        return h3.h3_to_geo(cell)
+    import geohash
+
+    lat, lon = geohash.decode(cell)
+    return (lat, lon)
+
+
+def make_encoder_udf(resolution: int, grid: str = "h3"):
+    """Return a pandas_udf bound to a specific grid + resolution (for the sweep)."""
 
     @pandas_udf(_ENC_SCHEMA)
     def _udf(points_series: pd.Series) -> pd.DataFrame:
@@ -71,16 +120,21 @@ def make_encoder_udf(resolution: int):
                 cols["n_cells_compact"].append(0)
                 cols["compression_ratio"].append(None)
                 cols["encoded_len_km"].append(None)
+                cols["max_hop_km"].append(None)
                 continue
 
-            # p = [lon, lat] -> geo_to_h3(lat, lon, res)
-            raw = [h3.geo_to_h3(p[1], p[0], resolution) for p in pts]
+            raw = (_h3_cells(pts, resolution) if grid == "h3"
+                   else _geohash_cells(pts, resolution))
             comp = _compact(raw)
 
-            # Encoded length = Haversine between consecutive compact cell centres.
+            # Encoded length = sum of centre-to-centre hops; also keep the LARGEST
+            # single hop, which is what exposes a residual GPS gap.
             length = 0.0
+            biggest = 0.0
             for a, b in zip(comp[:-1], comp[1:]):
-                length += h3.point_dist(h3.h3_to_geo(a), h3.h3_to_geo(b), unit="km")
+                d = h3.point_dist(_cell_centre(a, grid), _cell_centre(b, grid), unit="km")
+                length += d
+                biggest = max(biggest, d)
 
             cols["h3_seq_raw"].append(raw)
             cols["h3_seq_compact"].append(comp)
@@ -88,109 +142,276 @@ def make_encoder_udf(resolution: int):
             cols["n_cells_compact"].append(len(comp))
             cols["compression_ratio"].append(len(raw) / len(comp) if comp else None)
             cols["encoded_len_km"].append(length)
+            cols["max_hop_km"].append(biggest)
         return pd.DataFrame(cols)
 
     return _udf
 
 
-def encode(df, resolution: int):
+def encode(df, resolution: int, grid: str = "h3"):
     """Attach the encoder struct and flatten it to top-level columns."""
-    enc = make_encoder_udf(resolution)
+    enc = make_encoder_udf(resolution, grid)
     return df.withColumn("e", enc(F.col("points"))).select("*", "e.*").drop("e")
 
 
-def _features_path(use_sample: bool) -> str:
-    base = config.CLEAN_PARQUET
-    return base.replace(".parquet", "_features_sample.parquet") if use_sample \
-        else base.replace(".parquet", "_features.parquet")
+@pandas_udf(T.DoubleType())
+def _bearing_entropy(seq_series: pd.Series) -> pd.Series:
+    """
+    Shannon entropy (bits) of movement bearings observed leaving a cell,
+    bucketed into 8 compass sectors.
+
+    This is the metric the assignment's warning actually describes: "too-large
+    cells mean you cannot distinguish adjacent parallel roads". A cell sitting on
+    one road sees traffic in ~1-2 directions (low entropy); a cell that has
+    swallowed two separate roads sees several (high entropy). Averaged over all
+    cells it gives a per-resolution CONFLATION score, so the choice of grid and
+    resolution is measured rather than asserted.
+    """
+    import math
+
+    out = []
+    for bearings in seq_series:
+        if bearings is None or len(bearings) == 0:
+            out.append(0.0)
+            continue
+        buckets = [0] * 8
+        for b in bearings:
+            buckets[int(((b % 360) / 45.0)) % 8] += 1
+        total = sum(buckets)
+        ent = -sum((c / total) * math.log2(c / total) for c in buckets if c)
+        out.append(float(ent))
+    return pd.Series(out)
 
 
-def _write_report(name: str, lines) -> str:
-    out_dir = os.path.join(config.OUTPUT_BASE, "statistics")
-    os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, name)
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write("\n".join(lines) + "\n")
-    return path
-
-
-def main(use_sample: bool) -> None:
-    spark = get_spark("spatial-encoding")
-    spark.conf.set("spark.sql.execution.arrow.pyspark.enabled", "true")
-
-    src = _features_path(use_sample)
-    feats = spark.read.parquet(src).select(
-        "TRIP_ID", "TAXI_ID", "n_points", "duration_sec", "total_distance_km", "points"
-    )
-    feats.cache()
-    n = feats.count()
-    print(f"input trips: {n:,} from {os.path.basename(src)}")
-
-    # ---- 1. Encode at the chosen resolution (9) and persist ----
-    res = config.H3_RESOLUTION
-    enc = encode(feats, res).drop("points")  # drop heavy raw points; keep cells
-    enc.cache()
-
-    summary = enc.select(
+def _grid_stats(feats, resolution, grid):
+    """Cost + conflation metrics for one (grid, resolution) combination."""
+    enc = encode(feats, resolution, grid).cache()
+    agg = enc.select(
         F.round(F.avg("n_cells_raw"), 1).alias("avg_raw"),
         F.round(F.avg("n_cells_compact"), 1).alias("avg_compact"),
         F.round(F.avg("compression_ratio"), 2).alias("avg_compression"),
         F.round(F.avg("encoded_len_km"), 2).alias("avg_encoded_km"),
-        F.round(F.avg("total_distance_km"), 2).alias("avg_gps_km"),
+        # stability: encoded length / GPS path length (closer to 1 = better)
+        F.round(F.avg(F.col("encoded_len_km") / F.col("total_distance_km")), 3).alias("len_ratio"),
     ).collect()[0].asDict()
-    print(f"\n=== res {res} encoding summary ===")
-    for k, v in summary.items():
-        print(f"  {k:<16}: {v}")
 
-    out = config.CLEAN_PARQUET.replace(
-        ".parquet", f"_encoded_r{res}_sample.parquet" if use_sample
-        else f"_encoded_r{res}_full.parquet")   # must match the miners' readers
-    enc.write.mode("overwrite").parquet(out)
-    print(f"[encode] wrote -> {out}")
+    # distinct cells touched = the memory/skew cost of this resolution
+    cells = enc.select(F.explode("h3_seq_compact").alias("cell"))
+    agg["distinct_cells"] = cells.distinct().count()
 
-    rep = [f"# Phase 4 H3 Encoding Summary (res {res}, {'sample' if use_sample else 'full'})",
-           f"_generated: {datetime.now(timezone.utc).isoformat(timespec='seconds')}_",
-           f"\nrows: {n:,}\n", "| metric | value |", "|---|---|"]
-    rep += [f"| {k} | {v} |" for k, v in summary.items()]
-    p = _write_report(f"phase4_encoding_summary_{'sample' if use_sample else 'full'}.md", rep)
-    print(f"[encode] wrote report -> {p}")
+    # conflation: average bearing entropy per cell (higher = more roads merged)
+    pairs = enc.select(F.explode(_cell_pairs("h3_seq_compact", grid)).alias("p")).select("p.*")
+    per_cell = pairs.groupBy("cell").agg(F.collect_list("bearing").alias("bs"))
+    ent = per_cell.select(_bearing_entropy("bs").alias("e")).agg(
+        F.round(F.avg("e"), 3).alias("m")).collect()[0]["m"]
+    agg["bearing_entropy"] = ent
+    agg["grid"] = grid
+    agg["res"] = resolution
+    return agg
 
-    # ---- 2. Resolution sweep 8/9/10 (aggregates only, no persist) ----
-    print("\n=== resolution sweep 8/9/10 ===")
-    sweep_rows = []
-    for r in SWEEP_RESOLUTIONS:
-        s = encode(feats, r).select(
+
+def _cell_pairs(col, grid):
+    """(cell, bearing-to-next-cell) for every consecutive pair in a sequence."""
+    schema = T.ArrayType(T.StructType([
+        T.StructField("cell", T.StringType()),
+        T.StructField("bearing", T.DoubleType()),
+    ]))
+
+    @F.udf(schema)
+    def _udf(seq):
+        import math
+
+        if not seq or len(seq) < 2:
+            return []
+        out = []
+        for a, b in zip(seq[:-1], seq[1:]):
+            (lat1, lon1), (lat2, lon2) = _cell_centre(a, grid), _cell_centre(b, grid)
+            dlon = math.radians(lon2 - lon1)
+            y = math.sin(dlon) * math.cos(math.radians(lat2))
+            x = (math.cos(math.radians(lat1)) * math.sin(math.radians(lat2))
+                 - math.sin(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.cos(dlon))
+            out.append({"cell": a, "bearing": (math.degrees(math.atan2(y, x)) + 360.0) % 360.0})
+        return out
+
+    return _udf(col)
+
+
+def _cell_size_m(grid, res):
+    if grid == "h3":
+        return round(h3.edge_length(res, unit="m"), 1)
+    # geohash cell half-width in metres, north-south, at precision `res`
+    return round({5: 2400.0, 6: 610.0, 7: 76.0, 8: 19.0}.get(res, float("nan")), 1)
+
+
+def main(scale: str, compare_grids: bool) -> None:
+    spark = get_spark("spatial-encoding")
+    spark.conf.set("spark.sql.execution.arrow.pyspark.enabled", "true")
+    paths = config.dataset_paths(scale)
+
+    with cli.stage("m3_encoding", scale, log) as st:
+        cols = ["TRIP_ID", "TAXI_ID", "n_points", "duration_sec",
+                "total_distance_km", "points"]
+        raw_feats = spark.read.parquet(paths["features"])
+        n_in = raw_feats.count()
+
+        # ---- 0. Drop physically impossible trajectories (see module docstring) ----
+        drops = {}
+        if config.EXCLUDE_ANOMALOUS:
+            drops = raw_feats.select(
+                *[F.sum(F.col(c).cast("int")).alias(c) for c in FLAG_COLS]
+            ).collect()[0].asDict()
+            feats = raw_feats.filter(~F.col("is_anomalous")).select(*cols)
+        else:
+            feats = raw_feats.select(*cols)
+        feats.cache()
+        n = feats.count()
+        log.info("input trips: %s of %s (dropped %s anomalous)",
+                 f"{n:,}", f"{n_in:,}", f"{n_in - n:,}")
+
+        # ---- 1. Encode at the chosen resolution (9) and persist ----
+        res = config.H3_RESOLUTION
+        enc = encode(feats, res).drop("points")  # drop heavy raw points; keep cells
+        enc.cache()
+
+        summary = enc.select(
             F.round(F.avg("n_cells_raw"), 1).alias("avg_raw"),
             F.round(F.avg("n_cells_compact"), 1).alias("avg_compact"),
             F.round(F.avg("compression_ratio"), 2).alias("avg_compression"),
             F.round(F.avg("encoded_len_km"), 2).alias("avg_encoded_km"),
-            # stability: encoded length / GPS path length (closer to 1 = better)
-            F.round(F.avg(F.col("encoded_len_km") / F.col("total_distance_km")), 3).alias("len_ratio"),
+            F.round(F.avg("total_distance_km"), 2).alias("avg_gps_km"),
+            F.round(F.max("max_hop_km"), 3).alias("worst_hop_km"),
         ).collect()[0].asDict()
-        s["res"] = r
-        s["edge_m"] = round(h3.edge_length(r, unit="m"), 1)
-        sweep_rows.append(s)
-        print(f"  res {r}: {s}")
+        log.info("=== res %d encoding summary ===", res)
+        for k, v in summary.items():
+            log.info("  %-16s: %s", k, v)
 
-    sweep = [f"# H3 Resolution Comparison ({'sample' if use_sample else 'full'})",
-             f"_generated: {datetime.now(timezone.utc).isoformat(timespec='seconds')}_",
-             f"\nrows: {n:,}  | len_ratio = encoded_len_km / GPS total_distance_km (1.0 = ideal)\n",
-             "| res | edge_m | avg_raw | avg_compact | avg_compression | avg_encoded_km | len_ratio |",
-             "|---|---|---|---|---|---|---|"]
-    for s in sweep_rows:
-        sweep.append(f"| {s['res']} | {s['edge_m']} | {s['avg_raw']} | {s['avg_compact']} | "
-                     f"{s['avg_compression']} | {s['avg_encoded_km']} | {s['len_ratio']} |")
-    p2 = _write_report(f"h3_resolution_comparison_{'sample' if use_sample else 'full'}.md", sweep)
-    print(f"[sweep] wrote report -> {p2}")
+        # Residual-corruption check: after dropping anomalous trips, no clean
+        # trajectory should still contain a hop larger than the grid allows.
+        hop_limit = config.max_cell_hop_km(res)
+        n_bad_hop = enc.filter(F.col("max_hop_km") > hop_limit).count()
+        log.info("trips still containing a hop > %.2f km: %s (window guard will "
+                 "cut those windows)", hop_limit, f"{n_bad_hop:,}")
+
+        enc.write.mode("overwrite").parquet(paths["encoded"])
+        log.info("wrote -> %s", paths["encoded"])
+        st.update(rows_in=n_in, rows_out=n, dropped_anomalous=n_in - n,
+                  trips_with_bad_hop=n_bad_hop)
+
+        _write_encoding_report(scale, res, n_in, n, drops, summary,
+                               hop_limit, n_bad_hop)
+
+        # ---- 2. Grid / resolution comparison (opt-in: it re-encodes 5x) ----
+        if compare_grids:
+            _write_grid_report(scale, feats, n)
 
     spark.stop()
-    print("\nM3 ENCODING COMPLETE.")
+    log.info("M3 ENCODING COMPLETE.")
+
+
+def _write_encoding_report(scale, res, n_in, n, drops, summary, hop_limit, n_bad_hop):
+    lines = [f"# Phase 4 H3 Encoding Summary (res {res}, {scale})",
+             f"_generated: {datetime.now(timezone.utc).isoformat(timespec='seconds')}_",
+             "",
+             f"trips in: {n_in:,} | encoded: {n:,} | dropped as anomalous: {n_in - n:,}",
+             ""]
+    if drops:
+        lines += ["## Why trips were dropped before encoding",
+                  "| flag | trips | share of input |", "|---|---|---|"]
+        lines += [f"| {k} | {(drops[k] or 0):,} | {100 * (drops[k] or 0) / n_in:.2f}% |"
+                  for k in FLAG_COLS]
+        lines += ["",
+                  "A trajectory containing a GPS teleport yields sub-routes that no",
+                  "vehicle drove: sub-route length is measured between consecutive cell",
+                  "centres, so a single jump reads as a 10-45 km 'route'. Excluding these",
+                  "trips is what keeps the >=10/20/40 km configurations meaningful.", ""]
+    lines += ["## Encoding metrics", "| metric | value |", "|---|---|"]
+    lines += [f"| {k} | {v} |" for k, v in summary.items()]
+    lines += ["",
+              f"Residual check: {n_bad_hop:,} encoded trips still contain a hop larger",
+              f"than the grid limit ({hop_limit:.2f} km). Windows spanning such a hop are",
+              "rejected by the miners' hop guard, so they cannot become sub-routes."]
+    p = storage.write_lines(
+        storage.out_path("statistics", f"phase4_encoding_summary_{scale}.md"), lines)
+    log.info("wrote report -> %s", p)
+
+
+def _write_grid_report(scale, feats, n):
+    log.info("=== grid comparison (H3 8/9/10 vs geohash 6/7) ===")
+    rows = []
+    for r in SWEEP_RESOLUTIONS:
+        rows.append(_grid_stats(feats, r, "h3"))
+    for p in SWEEP_GEOHASH:
+        rows.append(_grid_stats(feats, p, "geohash"))
+    for s in rows:
+        log.info("  %s res %s: %s", s["grid"], s["res"], s)
+
+    lines = [f"# Grid & Resolution Comparison ({scale})",
+             f"_generated: {datetime.now(timezone.utc).isoformat(timespec='seconds')}_",
+             "",
+             f"rows: {n:,}",
+             "",
+             "- `len_ratio` = encoded length / GPS path length (1.0 = the grid",
+             "  neither inflates nor swallows distance).",
+             "- `distinct_cells` = alphabet size, i.e. the memory and shuffle cost.",
+             "- `bearing_entropy` = mean Shannon entropy (bits, 8 compass sectors) of",
+             "  travel directions leaving a cell. This is the CONFLATION measure: a",
+             "  cell on a single road sees one or two directions; a cell that has",
+             "  merged two parallel roads sees many. Lower is better.",
+             "",
+             "| grid | res | cell_m | avg_compact | len_ratio | distinct_cells | bearing_entropy |",
+             "|---|---|---|---|---|---|---|"]
+    for s in rows:
+        mark = " **<- chosen**" if (s["grid"] == "h3"
+                                    and s["res"] == config.H3_RESOLUTION) else ""
+        lines.append(
+            f"| {s['grid']} | {s['res']}{mark} | {_cell_size_m(s['grid'], s['res'])} | "
+            f"{s['avg_compact']} | {s['len_ratio']} | {s['distinct_cells']:,} | "
+            f"{s['bearing_entropy']} |")
+    # Derive the conclusion from the measurements rather than asserting one.
+    chosen = next((s for s in rows
+                   if s["grid"] == "h3" and s["res"] == config.H3_RESOLUTION), None)
+    finest = min(rows, key=lambda s: s["bearing_entropy"])
+    lines += ["", "## What the numbers say", ""]
+    lines += [
+        "- The trade-off is monotone and clear: coarser cells shrink the alphabet",
+        "  (cheap to shuffle) but raise bearing entropy, i.e. distinct roads get",
+        "  merged into one cell — exactly the failure the brief warns about.",
+    ]
+    if chosen and finest and finest is not chosen:
+        ratio = finest["distinct_cells"] / max(chosen["distinct_cells"], 1)
+        lines.append(
+            f"- **The lowest conflation is NOT our operating point.** "
+            f"{finest['grid']} res {finest['res']} scores "
+            f"{finest['bearing_entropy']} vs {chosen['bearing_entropy']} for our "
+            f"H3 res {chosen['res']}, but costs {ratio:.1f}x the alphabet "
+            f"({finest['distinct_cells']:,} vs {chosen['distinct_cells']:,} cells) "
+            f"and {finest['avg_compact'] / max(chosen['avg_compact'], 1):.1f}x the "
+            f"sequence length. Since sub-route keys are sequences of cells, that "
+            f"multiplies the mining key space superlinearly. Res "
+            f"{chosen['res']} is chosen as the point where conflation is already "
+            f"low and the alphabet still fits the shuffle budget — a deliberate "
+            f"compromise, not an optimum on this metric.")
+    h3_rows = {s["res"]: s for s in rows if s["grid"] == "h3"}
+    gh_rows = {s["res"]: s for s in rows if s["grid"] == "geohash"}
+    if h3_rows and gh_rows:
+        lines.append(
+            "- **Geohash is competitive on these metrics.** At comparable cell "
+            "sizes the two grids give similar entropy and len_ratio, so this table "
+            "does NOT by itself justify H3 over geohash. The reason to prefer H3 "
+            "is structural rather than statistical: hexagons have six equidistant "
+            "neighbours, so a trajectory is a walk with uniform step cost, whereas "
+            "geohash rectangles have neighbours at two different distances (edge "
+            "vs corner) and distort badly with latitude. That matters for a method "
+            "that measures route length by summing cell-to-cell hops.")
+
+    p = storage.write_lines(
+        storage.out_path("statistics", f"grid_comparison_{scale}.md"), lines)
+    log.info("wrote grid report -> %s", p)
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--sample", action="store_true")
-    g.add_argument("--full", action="store_true")
+    ap = cli.scale_parser(__doc__)
+    ap.add_argument("--compare-grids", action="store_true",
+                    help="also sweep H3 8/9/10 and geohash 6/7 (re-encodes 5x)")
     args = ap.parse_args()
-    main(use_sample=args.sample)
+    main(cli.scale_of(args), args.compare_grids)

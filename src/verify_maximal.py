@@ -15,21 +15,16 @@ Checks (independent of the mining's own aggregate):
 Run:
     python -m src.verify_maximal --sample
 """
-import argparse
-import csv
 import math
-import os
 
 from pyspark.sql import functions as F
 
+from src import cli, config, storage
 from src.spark_session import get_spark
-from src import config
 from src.route_mining_exact import DELIM
 
 
-def _read_csv(path):
-    with open(path, newline="", encoding="utf-8") as fh:
-        return list(csv.DictReader(fh))
+
 
 
 def _contain_support(trips, route):
@@ -51,13 +46,12 @@ def _best_left_ext(trips, route):
     return row["m"] or 0
 
 
-def main(use_sample: bool) -> None:
+def main(scale: str) -> None:
     spark = get_spark("verify-maximal")
-    suffix = "sample" if use_sample else "full"
     res = config.H3_RESOLUTION
 
-    enc_path = config.CLEAN_PARQUET.replace(".parquet", f"_encoded_r{res}_{suffix}.parquet")
-    csv_path = os.path.join(config.OUTPUT_BASE, "routes", f"maximal_frequent_top100_{suffix}.csv")
+    enc_path = config.dataset_paths(scale)["encoded"]
+    csv_path = storage.out_path("routes", f"maximal_frequent_top100_{scale}.csv")
 
     trips = spark.read.parquet(enc_path).withColumn(
         "trip_str", F.concat(F.lit(DELIM), F.concat_ws(DELIM, "h3_seq_compact"), F.lit(DELIM))
@@ -66,7 +60,13 @@ def main(use_sample: bool) -> None:
     n_trips = trips.count()
     min_sup = max(2, math.ceil(config.SUPPORT_X_PCT / 100.0 * n_trips))
 
-    rows = _read_csv(csv_path)
+    rows = storage.read_csv_rows(csv_path)
+    if not rows:
+        print("no maximal-frequent output for scale={scale} -- stage not run at this "
+              "scale; skipping.".format(scale=scale))
+        spark.stop()
+        return
+
     print(f"Spark {spark.version} | trips={n_trips:,} | X%={config.SUPPORT_X_PCT}% "
           f"min_sup={min_sup} | rows={len(rows)}")
     ok = True
@@ -118,9 +118,5 @@ def main(use_sample: bool) -> None:
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--sample", action="store_true")
-    g.add_argument("--full", action="store_true")
-    args = ap.parse_args()
-    main(use_sample=args.sample)
+    args = cli.scale_parser(__doc__).parse_args()
+    main(cli.scale_of(args))

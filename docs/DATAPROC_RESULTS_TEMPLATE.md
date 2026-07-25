@@ -1,5 +1,12 @@
 # DataProc Results Workbook (fill in during the cloud run)
 
+> ⚠️ **Superseded by [DATAPROC.md](DATAPROC.md).** This run-book predates the
+> storage-layer fix: it points `OUTPUT_BASE` at the master's `/tmp`, which the
+> cluster teardown then destroys, uses `--num-workers 4`, and reads the raw file
+> from `train.csv/train.csv`. Kept for its narrative and monitoring detail only —
+> follow DATAPROC.md for the commands.
+
+
 Record real numbers here as each stage completes. Sources: `gcloud dataproc jobs
 wait <ID>` (driver output), Spark UI **Stages**/**Executors** tabs, Billing. Leave
 a cell `-` if not measurable. After the run, these numbers replace the estimates in

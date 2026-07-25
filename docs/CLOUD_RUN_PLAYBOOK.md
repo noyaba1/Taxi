@@ -1,5 +1,12 @@
 # Cloud Run Playbook — First DataProc Execution
 
+> ⚠️ **Superseded by [DATAPROC.md](DATAPROC.md).** This run-book predates the
+> storage-layer fix: it points `OUTPUT_BASE` at the master's `/tmp`, which the
+> cluster teardown then destroys, uses `--num-workers 4`, and reads the raw file
+> from `train.csv/train.csv`. Kept for its narrative and monitoring detail only —
+> follow DATAPROC.md for the commands.
+
+
 Chronological, executable runbook. Someone who has never seen this project should
 be able to run the full DataProc execution from here without guessing. Do the
 **Part 0 local pre-flight first — it is free and prevents almost all budget
@@ -78,7 +85,7 @@ Baseline required: branch `Noya`, HEAD ≥ `1948b53`.
 - **Commands:**
   ```bash
   cd <repo-root>
-  gsutil -q stat "$BUCKET/porto/raw/train.csv" || gsutil -m cp "train.csv/train.csv" "$BUCKET/porto/raw/train.csv"
+  gsutil -q stat "$BUCKET/porto/raw/train.csv" || gsutil -m cp "$(python3 -c 'from src import config;print(config.RAW_TRAIN)')" "$BUCKET/porto/raw/train.csv"
   zip -qr src.zip src -x "*/__pycache__/*"
   gsutil cp src.zip "$BUCKET/code/src.zip"
   gsutil du -h "$BUCKET/porto/raw/train.csv"    # ~1.9 GiB
@@ -93,7 +100,7 @@ Baseline required: branch `Noya`, HEAD ≥ `1948b53`.
   ```bash
   gcloud dataproc clusters create porto --region "$REGION" \
     --master-machine-type n2-standard-4 --num-masters 1 \
-    --worker-machine-type n2-standard-4 --num-workers 4 \
+    --worker-machine-type n2-standard-4 --num-workers 5 \
     --image-version 2.1-debian12 --max-idle 30m \
     --initialization-actions gs://goog-dataproc-initialization-actions-$REGION/python/pip-install.sh \
     --metadata PIP_PACKAGES="h3==3.7.7 datasketches==5.0.2" \
@@ -120,7 +127,7 @@ Baseline required: branch `Noya`, HEAD ≥ `1948b53`.
 Helper (paste once in `[CS]`):
 ```bash
 D=$BUCKET/porto; E=spark.yarn.appMasterEnv; X=spark.executorEnv
-PROPS="$E.SPARK_ENV=cloud,$E.DATA_BASE=$D,$E.RAW_TRAIN=$D/raw/train.csv,$E.OUTPUT_BASE=/tmp/porto_out,$X.SPARK_ENV=cloud,$X.DATA_BASE=$D,$X.RAW_TRAIN=$D/raw/train.csv"
+PROPS="$E.SPARK_ENV=cloud,$E.DATA_BASE=$D,$E.RAW_TRAIN=$D/raw/train.csv,$E.OUTPUT_BASE=$D/outputs,$X.SPARK_ENV=cloud,$X.DATA_BASE=$D,$X.RAW_TRAIN=$D/raw/train.csv"
 submit(){ gcloud dataproc jobs submit pyspark "src/$1" --cluster porto --region "$REGION" \
           --py-files "$BUCKET/code/src.zip" --properties "$PROPS" -- --full; }
 ```
@@ -137,7 +144,7 @@ submit(){ gcloud dataproc jobs submit pyspark "src/$1" --cluster porto --region 
 ### Step 9 — Verify clean_data `[CS]`
 - **Commands:**
   ```bash
-  gsutil ls "$D/processed/trips_clean.parquet/_SUCCESS"
+  gsutil ls "$D/processed/trips_clean_full.parquet/_SUCCESS"
   gcloud dataproc jobs submit pyspark src/verify_phase1.py --cluster porto \
     --region "$REGION" --py-files "$BUCKET/code/src.zip" --properties "$PROPS" -- --full
   ```
@@ -147,7 +154,7 @@ submit(){ gcloud dataproc jobs submit pyspark "src/$1" --cluster porto --region 
 ### Step 10 — feature_engineering `[CS]`
 - **Command:** `submit feature_engineering.py`
 - **Expected:** driver prints anomaly-flag table + avg dist/speed. **Runtime:** 3-6 min.
-- **Success:** `_SUCCESS` at `…_features.parquet`. **UI:** narrow `pandas_udf` stage,
+- **Success:** `_SUCCESS` at `…_features_full.parquet`. **UI:** narrow `pandas_udf` stage,
   ~no shuffle. **Failure:** Arrow/pandas error → pyarrow issue (rare on 2.1).
 - **Screenshot:** no. **Reversible:** yes. **Safe to continue:** if SUCCEEDED.
 

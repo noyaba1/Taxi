@@ -13,31 +13,25 @@ Checks:
 Run:
     python -m src.verify_graph --sample
 """
-import argparse
-import csv
-import os
 
 import h3
 from pyspark.sql import functions as F
 
+from src import cli, config, storage
 from src.spark_session import get_spark
-from src import config
 from src.route_mining_exact import DELIM
 
 
-def _read_csv(path):
-    with open(path, newline="", encoding="utf-8") as fh:
-        return list(csv.DictReader(fh))
 
 
-def main(use_sample: bool) -> None:
+
+def main(scale: str) -> None:
     spark = get_spark("verify-graph")
-    suffix = "sample" if use_sample else "full"
     res = config.H3_RESOLUTION
 
-    enc_path = config.CLEAN_PARQUET.replace(".parquet", f"_encoded_r{res}_{suffix}.parquet")
-    routes_csv = os.path.join(config.OUTPUT_BASE, "routes", f"graph_heavy_paths_top100_{suffix}.csv")
-    zones_csv = os.path.join(config.OUTPUT_BASE, "routes", f"activity_zones_{suffix}.csv")
+    enc_path = config.dataset_paths(scale)["encoded"]
+    routes_csv = storage.out_path("routes", f"graph_heavy_paths_top100_{scale}.csv")
+    zones_csv = storage.out_path("routes", f"activity_zones_{scale}.csv")
 
     trips = spark.read.parquet(enc_path).withColumn(
         "trip_str", F.concat(F.lit(DELIM), F.concat_ws(DELIM, "h3_seq_compact"), F.lit(DELIM))
@@ -45,8 +39,14 @@ def main(use_sample: bool) -> None:
     trips.cache()
     n_trips = trips.count()
 
-    routes = _read_csv(routes_csv)
-    zones = _read_csv(zones_csv)
+    routes = storage.read_csv_rows(routes_csv)
+    zones = storage.read_csv_rows(zones_csv)
+    if not routes or not zones:
+        print("no graph output for scale=%s -- stage not run at this scale; "
+              "skipping." % scale)
+        spark.stop()
+        return
+
     print(f"Spark {spark.version} | trips={n_trips:,} | routes={len(routes)} | zones={len(zones)}")
     ok = True
 
@@ -104,9 +104,5 @@ def main(use_sample: bool) -> None:
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--sample", action="store_true")
-    g.add_argument("--full", action="store_true")
-    args = ap.parse_args()
-    main(use_sample=args.sample)
+    args = cli.scale_parser(__doc__).parse_args()
+    main(cli.scale_of(args))

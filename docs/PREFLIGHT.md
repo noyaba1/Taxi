@@ -1,5 +1,12 @@
 # DataProc Pre-Flight Checklist (one-shot, no guessing)
 
+> ⚠️ **Superseded by [DATAPROC.md](DATAPROC.md).** This run-book predates the
+> storage-layer fix: it points `OUTPUT_BASE` at the master's `/tmp`, which the
+> cluster teardown then destroys, uses `--num-workers 4`, and reads the raw file
+> from `train.csv/train.csv`. Kept for its narrative and monitoring detail only —
+> follow DATAPROC.md for the commands.
+
+
 Assume **one efficient use of the $50 budget**. Run every section in order. Do not
 create the cluster until Section A passes (it costs nothing and catches the
 expensive mistakes). `[ ]` = tick before proceeding.
@@ -88,7 +95,7 @@ gsutil ls -b "$BUCKET" 2>/dev/null || gsutil mb -l "$REGION" "$BUCKET"
 
 ### C2. Upload raw + code
 ```bash
-gsutil -q stat "$BUCKET/porto/raw/train.csv" || gsutil -m cp "train.csv/train.csv" "$BUCKET/porto/raw/train.csv"
+gsutil -q stat "$BUCKET/porto/raw/train.csv" || gsutil -m cp "$(python3 -c 'from src import config;print(config.RAW_TRAIN)')" "$BUCKET/porto/raw/train.csv"
 zip -qr src.zip src -x "*/__pycache__/*"; gsutil cp src.zip "$BUCKET/code/src.zip"
 gsutil du -h "$BUCKET/porto/raw/train.csv"          # ~1.9 GiB
 ```
@@ -114,8 +121,8 @@ stage-by-stage, run them manually per `docs/CLOUD_CHECKLIST.md` §4 instead.
 
 | # | Stage | Writes | Expected (full) | Watch for |
 |---|---|---|---|---|
-| 1 | `clean_data` | `…/processed/trips_clean.parquet` | total ≈ 1,710,670; valid ≈ 97% (~1.66M) | `FileNotFound` raw → RAW_TRAIN unset |
-| 2 | `feature_engineering` | `…_features.parquet` | ~1.66M rows; anomaly few % | Arrow/pandas errors → pyarrow missing |
+| 1 | `clean_data` | `…/processed/trips_clean_full.parquet` | total ≈ 1,710,670; valid ≈ 97% (~1.66M) | `FileNotFound` raw → RAW_TRAIN unset |
+| 2 | `feature_engineering` | `…_features_full.parquet` | ~1.66M rows; anomaly few % | Arrow/pandas errors → pyarrow missing |
 | 3 | `spatial_encoding` | `…_encoded_r9_full.parquet` | ~1.66M; avg_compact ≈ 17 | `ModuleNotFoundError h3` → init action failed |
 | 4 | `route_mining_maximal` | `maximal_frequent_top100` CSV | 100s of maximal routes @ X=0.5% (min_sup ≈ 8k trips); holes shown | huge shuffle → raise workers |
 | 5 | `route_mining_exact` | `exact_top100` CSV | ~300M windows → ~190M distinct; 1 km top support in the **thousands**; 10-40 km now non-trivial | `maxResultSize`? (should be fixed) |

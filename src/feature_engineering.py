@@ -9,7 +9,12 @@ Reads the clean Parquet from Phase 1 and derives per-trip features:
     avg_speed_kmh       total_distance / duration
     max_seg_speed_kmh   fastest single 15s segment (used for GPS-jump detection)
     min/max lon/lat     trajectory bounding box
-    anomaly flags       is_teleport, is_idle, is_too_fast, is_too_short
+    anomaly flags       is_teleport, is_idle, is_too_fast, is_too_short,
+                        is_offgrid  ->  is_anomalous
+
+`is_anomalous` is not decoration: spatial_encoding EXCLUDES those trips before
+building the cell sequences, because a trajectory with a GPS teleport in it
+produces sub-routes no taxi ever drove.
 
 SCALABILITY / DataProc-readiness
 --------------------------------
@@ -20,19 +25,18 @@ array per trip and returns ALL metrics in one pass. This:
   * is embarrassingly parallel -> linear speedup when DataProc adds machines.
 
 Run:
-    python -m src.feature_engineering --sample
-    python -m src.feature_engineering --full
+    python -m src.feature_engineering --sample | --mid | --full
 """
-import argparse
 import numpy as np
 import pandas as pd
 from pyspark.sql import functions as F, types as T
 from pyspark.sql.pandas.functions import pandas_udf
 
 from src.spark_session import get_spark
-from src import config
+from src import cli, config
 
 EARTH_RADIUS_KM = 6371.0088
+log = cli.setup_logging("features")
 
 # Struct returned by the per-trip UDF. Declaring it explicitly lets Spark
 # build the output schema without inference.
@@ -117,6 +121,14 @@ def add_features(df):
     )
 
     # --- Anomaly flags (each defensible & individually inspectable) ---
+    # Phase 1 could only bbox-check the FIRST and LAST GPS point, because the
+    # trajectory bounding box is computed here. A trip that starts and ends in
+    # Porto but spikes to Null Island mid-route therefore passes cleaning; this
+    # is the flag that catches it.
+    margin = config.ANOMALY_METRO_MARGIN
+    lon_lo, lon_hi = config.PORTO_LON_RANGE[0] - margin, config.PORTO_LON_RANGE[1] + margin
+    lat_lo, lat_hi = config.PORTO_LAT_RANGE[0] - margin, config.PORTO_LAT_RANGE[1] + margin
+
     df = (
         df
         # GPS teleport: a single 15s segment faster than any real car.
@@ -127,59 +139,65 @@ def add_features(df):
         .withColumn("is_too_fast", F.col("avg_speed_kmh") > 120.0)
         # Degenerate: essentially no movement.
         .withColumn("is_too_short", F.col("total_distance_km") < 0.05)
+        # Any point of the trajectory outside the metro box (+ margin).
+        .withColumn(
+            "is_offgrid",
+            (F.col("min_lon") < lon_lo) | (F.col("max_lon") > lon_hi)
+            | (F.col("min_lat") < lat_lo) | (F.col("max_lat") > lat_hi),
+        )
         .withColumn(
             "is_anomalous",
-            F.col("is_teleport") | F.col("is_idle") | F.col("is_too_fast") | F.col("is_too_short"),
+            F.col("is_teleport") | F.col("is_idle") | F.col("is_too_fast")
+            | F.col("is_too_short") | F.col("is_offgrid"),
         )
     )
     return df
 
 
-def main(use_sample: bool) -> None:
+FLAG_COLS = ["is_teleport", "is_idle", "is_too_fast", "is_too_short",
+             "is_offgrid", "is_anomalous"]
+
+
+def main(scale: str) -> None:
     spark = get_spark("feature-engineering")
     # Arrow must be on for pandas_udf performance.
     spark.conf.set("spark.sql.execution.arrow.pyspark.enabled", "true")
+    paths = config.dataset_paths(scale)
 
-    in_path = config.CLEAN_PARQUET.replace(".parquet", "_sample.parquet") if use_sample \
-        else config.CLEAN_PARQUET
-    df = spark.read.parquet(in_path)
+    with cli.stage("p2_features", scale, log) as st:
+        df = spark.read.parquet(paths["clean"])
 
-    feats = add_features(df)
-    feats.cache()  # we read it twice below (report + write)
+        feats = add_features(df)
+        feats.cache()  # we read it twice below (report + write)
 
-    # --- Defensible quality report ---
-    # One pass computes the row count + every flag count together (no N+1 jobs).
-    flag_cols = ["is_teleport", "is_idle", "is_too_fast", "is_too_short", "is_anomalous"]
-    agg = feats.select(
-        F.count(F.lit(1)).alias("n"),
-        *[F.sum(F.col(c).cast("int")).alias(c) for c in flag_cols],
-    ).collect()[0]
-    n = agg["n"]
-    print("=" * 56)
-    print(f"  trips with features : {n:,}")
-    for c in flag_cols:
-        cnt = agg[c] or 0
-        print(f"  {c:<16} : {cnt:>8,}  ({100*cnt/n:5.2f}%)")
-    print("=" * 56)
-    feats.select(
-        F.round(F.avg("total_distance_km"), 2).alias("avg_dist_km"),
-        F.round(F.avg("duration_sec") / 60, 1).alias("avg_dur_min"),
-        F.round(F.avg("avg_speed_kmh"), 1).alias("avg_speed_kmh"),
-        F.round(F.avg("sinuosity"), 2).alias("avg_sinuosity"),
-    ).show()
-    print("=" * 56)
+        # --- Defensible quality report ---
+        # One pass computes the row count + every flag count together (no N+1 jobs).
+        agg = feats.select(
+            F.count(F.lit(1)).alias("n"),
+            *[F.sum(F.col(c).cast("int")).alias(c) for c in FLAG_COLS],
+        ).collect()[0]
+        n = agg["n"]
+        log.info("=" * 56)
+        log.info("  trips with features : %s", f"{n:,}")
+        for c in FLAG_COLS:
+            cnt = agg[c] or 0
+            log.info("  %-16s : %8s  (%5.2f%%)", c, f"{cnt:,}", 100 * cnt / n)
+        log.info("=" * 56)
+        feats.select(
+            F.round(F.avg("total_distance_km"), 2).alias("avg_dist_km"),
+            F.round(F.avg("duration_sec") / 60, 1).alias("avg_dur_min"),
+            F.round(F.avg("avg_speed_kmh"), 1).alias("avg_speed_kmh"),
+            F.round(F.avg("sinuosity"), 2).alias("avg_sinuosity"),
+        ).show()
 
-    out = config.CLEAN_PARQUET.replace(".parquet", "_features_sample.parquet") if use_sample \
-        else config.CLEAN_PARQUET.replace(".parquet", "_features.parquet")
-    feats.write.mode("overwrite").parquet(out)
-    print(f"[features] wrote -> {out}")
+        feats.write.mode("overwrite").parquet(paths["features"])
+        log.info("wrote -> %s", paths["features"])
+        st.update(rows_in=n, rows_out=n,
+                  **{c: int(agg[c] or 0) for c in FLAG_COLS})
+
     spark.stop()
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--sample", action="store_true")
-    g.add_argument("--full", action="store_true")
-    args = ap.parse_args()
-    main(use_sample=args.sample)
+    args = cli.scale_parser(__doc__).parse_args()
+    main(cli.scale_of(args))

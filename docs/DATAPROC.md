@@ -1,161 +1,150 @@
-# Running on GCP DataProc (5+ machines) over GCS
+# Running on GCP DataProc
 
-The final run must execute on **DataProc with ≥5 machines** reading from **GCS**.
-The code is already cloud-ready: the only switch is two environment variables.
-**Execution and the $50 budget are the group's to spend — this doc gives the exact
-commands and a cost-safe procedure.**
+**This is the canonical cloud document.** The other run-books in `docs/`
+(`CLOUD_RUN_PLAYBOOK`, `PREFLIGHT`, `CLOUD_CHECKLIST`, `RELEASE_AUDIT`,
+`LIVE_MONITORING_GUIDE`) predate the storage-layer fix and are kept for their
+narrative and monitoring detail. Where they disagree with this file, this file is
+right.
 
 ---
 
-## 0. The cloud switch (no code changes)
+## What changes between local and cloud
 
-| Concern | Local | DataProc |
+Nothing in the code. Four environment variables:
+
+| var | local | cloud |
 |---|---|---|
-| Spark master | `local[*]` (set in `spark_session.py`) | `SPARK_ENV=cloud` → YARN provides it |
-| Data location | `data/` folder | `DATA_BASE=gs://<bucket>/porto` |
-| Path safety | — | `config.storage_join` keeps `gs://` intact (pathlib would break it) |
-| Windows shims | active | `os.name != 'nt'` → **no-op** |
+| `SPARK_ENV` | unset (`local[*]`) | `cloud` — YARN provides the master |
+| `DATA_BASE` | `./data` | `gs://<bucket>/porto` |
+| `OUTPUT_BASE` | `./outputs` | `gs://<bucket>/porto/outputs` |
+| `RAW_TRAIN` | auto-resolved | `gs://<bucket>/porto/raw/train.csv` |
 
-So on the cluster: `export SPARK_ENV=cloud` and `export DATA_BASE=gs://<bucket>/porto`.
+`config.storage_join` keeps the `gs://` scheme intact for data paths, and
+`src/storage.py` routes every report and result CSV through Hadoop's FileSystem
+when the path has a URI scheme.
 
----
-
-## 1. Prerequisites
-
-```bash
-gcloud config set project <PROJECT_ID>
-export BUCKET=gs://<your-bucket>
-export REGION=europe-west1          # near Portugal; cheap
-gsutil mb -l $REGION $BUCKET        # once
-```
-
-## 2. Upload the data + code
-
-```bash
-# raw data (once): the ~1.9 GB file, to a clean path
-gsutil -m cp "train.csv/train.csv" $BUCKET/porto/raw/train.csv
-# code: zip the src package so jobs can import it
-cd <repo> && zip -r src.zip src -x "*/__pycache__/*"
-gsutil cp src.zip $BUCKET/code/src.zip
-```
-
-## 3. Create a 5-machine cluster (cost-safe)
-
-```bash
-gcloud dataproc clusters create porto \
-  --region $REGION \
-  --master-machine-type n2-standard-4 --num-masters 1 \
-  --worker-machine-type n2-standard-4 --num-workers 4 \
-  --image-version 2.1-debian12 \
-  --max-idle 30m \
-  --initialization-actions gs://goog-dataproc-initialization-actions-$REGION/python/pip-install.sh \
-  --metadata PIP_PACKAGES="h3==3.7.7 datasketches==5.0.2" \
-  --properties spark:spark.sql.adaptive.enabled=true,spark:spark.sql.shuffle.partitions=200
-```
-
-`--max-idle` auto-deletes an idle cluster (protects the budget). The init action
-installs **h3 + datasketches** on every node — the pipeline imports them and a
-stock image does not have them (numpy/pandas/pyarrow are already present).
-
-1 master + 4 workers = **5 machines** in one Spark cluster. `--max-idle` auto-
-deletes it so a forgotten cluster can't drain the $50.
-
-## 4. Submit the pipeline (each stage = one PySpark job)
-
-Each stage reads Parquet from the previous one. Submit in order (see
-`scripts/dataproc_submit.sh` for a loop):
-
-`clean_data` needs **`RAW_TRAIN`** too (else it reads the local default path and
-fails). Pass it on both the driver (appMasterEnv) and executors:
-
-```bash
-D=$BUCKET/porto
-E=spark.yarn.appMasterEnv; X=spark.executorEnv
-PROPS="$E.SPARK_ENV=cloud,$E.DATA_BASE=$D,$E.RAW_TRAIN=$D/raw/train.csv,\
-$E.OUTPUT_BASE=/tmp/porto_out,$X.SPARK_ENV=cloud,$X.DATA_BASE=$D,$X.RAW_TRAIN=$D/raw/train.csv"
-submit () {  # $1 = module file under src/
-  gcloud dataproc jobs submit pyspark src/$1 \
-    --cluster porto --region $REGION \
-    --py-files $BUCKET/code/src.zip --properties "$PROPS" \
-    -- --full
-}
-submit clean_data.py
-submit feature_engineering.py
-submit spatial_encoding.py
-submit route_mining_maximal.py      # Method B (PDF definition)
-submit route_mining_clustering.py   # Method A
-submit route_mining_graph.py        # Method C + zones
-submit anomaly_analysis.py
-submit route_mining_exact.py        # exact + approx comparison (M5/M7)
-submit route_mining_approx.py
-```
-
-**Where the results are.** Parquet tables (silver/gold) land in
-`$BUCKET/porto/processed/` (Spark writes gs:// natively). The small top-100
-route/zone/anomaly **CSVs and `.md` reports** are written via plain `open()` to the
-**driver's** local `OUTPUT_BASE=/tmp/porto_out` — *and every stage also PRINTS its
-result tables to stdout*, which Dataproc captures to the job's **driver output on
-GCS** automatically. So you can read all headline numbers from the job output
-without retrieving files.
-
-To also fetch the CSV files, copy them off the master after the run:
-```bash
-gcloud compute ssh porto-m --zone $REGION-b --command \
-  "gsutil -m cp -r /tmp/porto_out gs://<bucket>/porto/outputs"
-```
-(Or regenerate the CSVs locally by pointing the mining stages at the downloaded
-encoded Parquet.)
-
-## 5. Delete the cluster (do this the moment you finish)
-
-```bash
-gcloud dataproc clusters delete porto --region $REGION -q
-```
-
-## 6. Budget guidance ($50)
-
-- n2-standard-4 ×5 ≈ **$1/hour** total; a full pipeline pass is well under an hour.
-- Debug on the **local 5k sample** (free) — never debug on the cluster.
-- Use `--max-idle`, delete promptly, run the full job **once** for the final
-  numbers. Realistic spend: a few dollars.
-
-## 7. Validate cloud results by PARITY
-
-The full-run top routes/zones must match the local sample's *shape* (same downtown
-corridors, same top activity zones), with larger support counts. Run the local
-verifiers' logic on the cloud outputs, or eyeball the map notebook against gs://.
+> **Why `OUTPUT_BASE` must be a `gs://` path.** An earlier version pointed it at
+> `/tmp/porto_out` on the master, because the writers used plain `open()`. The
+> submit script deletes the cluster on exit — so every top-100 CSV it had just
+> spent an hour computing was destroyed with the node. Results now go straight to
+> GCS and survive teardown.
 
 ---
 
-## 8. Scale-hardening checklist (apply right before the full/cloud run)
+## One command
 
-These were **deliberately NOT applied to the sample pipeline** — on 5k trips they
-give no measurable benefit and would destabilise validated code (see the M8.1
-decision in the final report). Apply them when the full-scale cost is real and
-**measure the delta**:
+```bash
+PROJECT=my-project BUCKET=gs://my-bucket bash scripts/dataproc_submit.sh
+```
 
-1. **Persist `cum_km` in encoding.** `route_mining_exact._subroutes` recomputes
-   `h3.point_dist` per trip. Store a per-trip `cum_km: array<double>` in
-   `spatial_encoding` and pass it in, removing ~29M H3 calls/mining-run at full
-   scale. *(Also fixes the Phase-4 doc note.)* Low risk, re-run the 4 mining
-   verifiers after.
+It uploads code and data, creates 1 master + **5 workers**, submits every stage
+against `gs://` paths, and deletes the cluster on any exit (success, failure or
+Ctrl-C).
 
-2. **Hash the group key.** The exact miner shuffles ~260M window rows keyed by
-   `>`-joined hex strings (~640 B). Group by `F.xxhash64(subroute)` and carry the
-   string only for the surviving ≤600 top routes (join it back), cutting shuffle
-   bytes ~40–80×. 64-bit collision prob over 810k keys is negligible.
+### Do a cheap rehearsal first
 
-3. **Skew.** Downtown keys are hot. Rely on `spark.sql.adaptive.skewJoin` (AQE is
-   on) and, if needed, salt the hottest keys in a two-stage aggregation — or use
-   the M7 sketches (no per-key reducer) as the scalable path.
+```bash
+PROJECT=… BUCKET=… SCALE=--sample WORKERS=2 bash scripts/dataproc_submit.sh
+```
 
-4. **Partitions.** Raise `spark.sql.shuffle.partitions` (200–400 on the cluster;
-   `config.LOCAL_SHUFFLE_PARTITIONS`=16 is a laptop value). Repartition the
-   encoded table before the big groupBy.
+This runs the whole pipeline on 5,000 trips on a 2-worker cluster. It costs
+cents, takes minutes, and proves the things most likely to be wrong:
+credentials, the GCS paths, the `pip` init action, and that results actually land
+in `gs://…/outputs/routes/`. Only then run `--full`.
 
-5. **Clustering / graph at scale.** M9 collects the pruned edge list to the driver
-   (capped by `EDGE_COLLECT_CAP`); M10 collects frequent edges for the walks. At
-   1.71M, replace with distributed GraphFrames LPA/Louvain (A) and Pregel/beam (C).
-   PageRank already runs distributed.
+---
 
-Expected impact is documented; **numbers to be filled in from the cloud run.**
+## Cost control
+
+- `--max-idle 30m` plus a `trap … EXIT` that deletes the cluster unconditionally.
+- 6 × `n2-standard-4` ≈ $1.20–1.50/hour in `europe-west1`. A full run fits
+  comfortably inside a $50 budget **provided** you do not run the quadratic
+  baseline (below).
+- **Never debug in the cloud.** `--sample` for correctness, `--mid` for shuffle
+  behaviour — both free on a laptop.
+
+---
+
+## Which stages run at `--full`, and why
+
+`scripts/dataproc_submit.sh` submits:
+
+```
+clean_data · feature_engineering · summarize_features · spatial_encoding
+route_mining_suffix_array · route_mining_maximal · route_mining_clustering
+route_mining_graph · anomaly_analysis · route_mining_approx --approx-only
+evaluation · visualization
+```
+
+It deliberately **omits `route_mining_exact` and `route_mining_suffix` at
+`--full`**. Those enumerate every contiguous window of every trip — O(n²) in
+cells per trip. Measured on this project:
+
+| | 4,745 trips | 188,761 trips |
+|---|---|---|
+| windows emitted | 916,815 | 33,597,872 |
+| exact miner | 7.5 s | **OOM (Java heap)** |
+| suffix array | 9.0 s | **26 s** |
+
+At 1.71M trips that is order 10⁸–10⁹ rows and >100 GB of shuffle. The **suffix
+array is the exact path at scale** and gives identical supports (verified: 0
+disagreements over every shared route). `route_mining_exact` also refuses to
+start above `EXACT_MAX_TRIPS` rather than failing an hour in.
+
+Both baselines still run under `SCALE=--sample`, which is where the accuracy
+comparison against the sketches belongs.
+
+---
+
+## Cluster dependencies
+
+`h3`, `datasketches` and `python-geohash` are not on a stock DataProc image; the
+script installs them on every node via the `pip-install.sh` initialization
+action. `numpy`/`pandas`/`pyarrow` are preinstalled on image 2.1, so `pandas_udf`
+works out of the box.
+
+---
+
+## Retrieving results
+
+They are already in GCS:
+
+```bash
+gsutil ls -r "gs://<bucket>/porto/outputs/routes/"
+gsutil -m cp -r "gs://<bucket>/porto/outputs" ./cloud_outputs/
+```
+
+Parquet tables live under `gs://<bucket>/porto/processed/`
+(`trips_clean_full.parquet`, `trips_features_full.parquet`,
+`trips_encoded_r9_full.parquet`). Every stage also prints its headline numbers,
+captured in the Dataproc driver output on GCS.
+
+For the Colab notebook, point `BASE` at `gs://<bucket>/porto/outputs/routes` and
+set `SCALE = 'full'`.
+
+---
+
+## Checks along the way
+
+| after | check |
+|---|---|
+| upload | `gsutil du -h "$BUCKET/porto/raw/train.csv"` ≈ 1.9 GiB |
+| clean | `gsutil ls "$D/processed/trips_clean_full.parquet/_SUCCESS"`; driver prints valid-trip % |
+| encoding | driver prints `dropped N anomalous` and `trips still containing a hop > … : 0` |
+| suffix array | driver prints suffixes indexed and maximal routes found |
+| end | `gsutil ls "$D/outputs/routes/"` lists a `*_top100_full.csv` per method |
+
+If a stage fails the cluster is deleted by the trap, so read the driver output
+from GCS rather than expecting to SSH in.
+
+---
+
+## Troubleshooting
+
+| symptom | cause | fix |
+|---|---|---|
+| `FileNotFoundException` in `clean_data` | `RAW_TRAIN` unset or upload incomplete | `gsutil ls "$D/raw/train.csv"` |
+| `ModuleNotFoundError: h3` on executors | init action did not run | check cluster-creation logs and the `--metadata PIP_PACKAGES` line |
+| results not in GCS | `OUTPUT_BASE` not a `gs://` path | the script sets it; check the job's `--properties` |
+| OOM in a mining stage | quadratic baseline slipped into a large run | it is not submitted at `--full`; check the stage list |
+| job succeeds but tables are empty | stale parquet from an interrupted run | delete `$D/processed/` and rerun from `clean_data` |

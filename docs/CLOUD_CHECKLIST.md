@@ -33,7 +33,7 @@ gsutil ls -b "$BUCKET" 2>/dev/null || gsutil mb -l "$REGION" "$BUCKET"
 ```bash
 cd <repo-root>
 # raw 1.9 GB file -> clean path (a few minutes)
-gsutil -m cp "train.csv/train.csv" "$BUCKET/porto/raw/train.csv"
+gsutil -m cp "$(python3 -c 'from src import config;print(config.RAW_TRAIN)')" "$BUCKET/porto/raw/train.csv"
 # code package
 zip -qr src.zip src -x "*/__pycache__/*"
 gsutil cp src.zip "$BUCKET/code/src.zip"
@@ -58,14 +58,14 @@ It creates a **1 master + 4 worker = 5-machine** cluster, submits every stage wi
 ```bash
 gcloud dataproc clusters create porto --region "$REGION" \
   --master-machine-type n2-standard-4 --num-masters 1 \
-  --worker-machine-type n2-standard-4 --num-workers 4 \
+  --worker-machine-type n2-standard-4 --num-workers 5 \
   --image-version 2.1-debian12 --max-idle 30m \
   --initialization-actions gs://goog-dataproc-initialization-actions-$REGION/python/pip-install.sh \
   --metadata PIP_PACKAGES="h3==3.7.7 datasketches==5.0.2" \
   --properties spark:spark.sql.adaptive.enabled=true,spark:spark.sql.shuffle.partitions=200
 
 D=$BUCKET/porto; E=spark.yarn.appMasterEnv; X=spark.executorEnv
-PROPS="$E.SPARK_ENV=cloud,$E.DATA_BASE=$D,$E.RAW_TRAIN=$D/raw/train.csv,$E.OUTPUT_BASE=/tmp/porto_out,$X.SPARK_ENV=cloud,$X.DATA_BASE=$D,$X.RAW_TRAIN=$D/raw/train.csv"
+PROPS="$E.SPARK_ENV=cloud,$E.DATA_BASE=$D,$E.RAW_TRAIN=$D/raw/train.csv,$E.OUTPUT_BASE=$D/outputs,$X.SPARK_ENV=cloud,$X.DATA_BASE=$D,$X.RAW_TRAIN=$D/raw/train.csv"
 submit(){ gcloud dataproc jobs submit pyspark "src/$1" --cluster porto --region "$REGION" \
           --py-files "$BUCKET/code/src.zip" --properties "$PROPS" -- --full; }
 

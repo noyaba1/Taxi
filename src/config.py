@@ -8,6 +8,15 @@ DESIGN PRINCIPLE (local-first, cloud-ready):
     only change the *_BASE constants here (e.g. to "gs://my-bucket/...").
     No other source file hard-codes a path. This is what makes the migration
     a 5-minute change instead of a refactor.
+
+That principle is now ENFORCED rather than merely stated:
+  * `dataset_paths(scale)` is the ONLY place a parquet filename is built. Six
+    modules used to reconstruct `_encoded_r{res}_{scale}.parquet` independently,
+    which caused a real cloud outage (commit adf2caf, "cloud --full blocker").
+  * `RAW_*` inputs are RESOLVED against the filesystem instead of assumed, so a
+    checkout whose data sits in a differently-named folder still runs.
+  * Mining constants live here only; `route_mining_exact` used to redefine the
+    length thresholds locally, so editing this file silently did nothing.
 """
 from pathlib import Path
 import os
@@ -33,19 +42,89 @@ def storage_join(base, *parts):
     """
     return "/".join([str(base).rstrip("/"), *parts])
 
-# Raw inputs (the lecturer's files).
-# NOTE: the full dataset physically lives at  train.csv/train.csv
-RAW_TRAIN = os.environ.get(
-    "RAW_TRAIN", str(PROJECT_ROOT / "train.csv" / "train.csv")
-)
-RAW_TEST = str(PROJECT_ROOT / "Porto_taxi_data_test_partial_trajectories.csv")
 
-# Working datasets (gs://-safe joins so the cloud switch actually works)
-SAMPLE_CSV = storage_join(DATA_BASE, "sample", "train_sample.csv")
-CLEAN_PARQUET = storage_join(DATA_BASE, "processed", "trips_clean.parquet")
+def _first_existing(env_var, *candidates):
+    """
+    Resolve an input file: an explicit env var always wins (that is the cloud
+    override, and it may point at a gs:// object we cannot stat), otherwise take
+    the first candidate that actually exists on disk.
+
+    Returns the first candidate unchanged when none exist, so the caller still
+    gets a usable path in the error message rather than None.
+    """
+    override = os.environ.get(env_var)
+    if override:
+        return override
+    for c in candidates:
+        if Path(c).exists():
+            return str(c)
+    return str(candidates[0])
+
+
+# The lecturer ships the data inside a long UCI-style folder name; older
+# instructions assumed a `train.csv/train.csv` layout. Accept both (and a plain
+# file at the project root) instead of hard-coding one and failing on the other.
+_UCI_DIR = PROJECT_ROOT / "taxi+service+trajectory+prediction+challenge+ecml+pkdd+2015"
+
+RAW_TRAIN = _first_existing(
+    "RAW_TRAIN",
+    _UCI_DIR / "train.csv",
+    PROJECT_ROOT / "train.csv" / "train.csv",
+    PROJECT_ROOT / "train.csv",
+)
+RAW_TEST = _first_existing(
+    "RAW_TEST",
+    _UCI_DIR / "Porto_taxi_data_test_partial_trajectories.csv",
+    PROJECT_ROOT / "Porto_taxi_data_test_partial_trajectories.csv",
+)
+# Ground truth for the original Kaggle challenge. Not used by the route-mining
+# pipeline; kept resolvable so a future accuracy study does not re-invent this.
+SOLUTION_TRAVEL_TIME = _first_existing(
+    "SOLUTION_TRAVEL_TIME", _UCI_DIR / "solution_challengeII.csv")
+SOLUTION_DESTINATION = _first_existing(
+    "SOLUTION_DESTINATION", _UCI_DIR / "solution_fixed.csv")
 
 # ------------------------------------------------------------------
-# 2. DATASET CONSTANTS
+# 2. DATASET SCALES AND DERIVED PATHS
+# ------------------------------------------------------------------
+# "sample" = a few thousand trips (seconds, for correctness);
+# "mid"    = a few hundred thousand (minutes, exercises a real shuffle/skew);
+# "full"   = all 1.71M (DataProc).
+SCALES = ("sample", "mid", "full")
+DEFAULT_SAMPLE_N = {"sample": 5_000, "mid": 200_000}
+
+_PROCESSED = storage_join(DATA_BASE, "processed")
+_SAMPLE_DIR = storage_join(DATA_BASE, "sample")
+
+
+def sample_csv_dir(scale: str) -> str:
+    """Spark writes a DIRECTORY of part files; the loader reads the directory."""
+    return storage_join(_SAMPLE_DIR, f"train_{scale}.csv_dir")
+
+
+def dataset_paths(scale: str, resolution: int | None = None) -> dict:
+    """
+    The single place a dataset filename is constructed.
+
+    Naming is uniform across scales (`_sample` / `_mid` / `_full`) on purpose:
+    the previous convention left the full-scale clean/feature tables unsuffixed
+    while the encoded table was suffixed `_full`, and the mismatch shipped to
+    production once already.
+    """
+    if scale not in SCALES:
+        raise ValueError(f"unknown scale {scale!r}; expected one of {SCALES}")
+    res = H3_RESOLUTION if resolution is None else resolution
+    return {
+        "scale": scale,
+        "raw_csv": RAW_TRAIN if scale == "full" else sample_csv_dir(scale),
+        "clean": storage_join(_PROCESSED, f"trips_clean_{scale}.parquet"),
+        "features": storage_join(_PROCESSED, f"trips_features_{scale}.parquet"),
+        "encoded": storage_join(_PROCESSED, f"trips_encoded_r{res}_{scale}.parquet"),
+    }
+
+
+# ------------------------------------------------------------------
+# 3. DATASET CONSTANTS
 # ------------------------------------------------------------------
 # GPS is sampled every 15 seconds (given by the dataset spec).
 GPS_INTERVAL_SEC = 15
@@ -61,34 +140,90 @@ MAX_POINTS = 4000       # >4000 pts (~16.6h) is almost certainly corrupted
 MAX_SPEED_KMH = 200.0   # taxi physically cannot exceed this between samples
 
 # ------------------------------------------------------------------
-# 3. SPATIAL ENCODING (used from Phase 4 onward)
+# 4. SPATIAL ENCODING
 # ------------------------------------------------------------------
 H3_RESOLUTION = 9       # ~174 m edge hexagons - justified in README Phase 4
 
+
+def max_cell_hop_km(resolution: int | None = None) -> float:
+    """
+    Largest plausible distance between two CONSECUTIVE compact cells.
+
+    Derived, not guessed, from two facts we already commit to elsewhere:
+
+      travel       MAX_SPEED_KMH is the speed above which we call a segment a
+                   teleport and drop the trip. So the furthest a *retained*
+                   vehicle can move between two GPS samples is
+                   MAX_SPEED_KMH * GPS_INTERVAL_SEC.  = 0.83 km at 200 km/h / 15 s
+      quantisation a cell sequence reports each position at its cell CENTRE,
+                   which can sit up to one circumradius (== edge length, for a
+                   hexagon) from the true point -- at BOTH ends of the hop.
+                   = 2 * 0.175 km at res 9
+
+    Sum: ~1.18 km at res 9. Anything larger cannot be produced by a vehicle we
+    chose to keep, so it is a GAP in the trace -- lost signal, a tunnel, a
+    tracker reset -- and the miners split trajectories there.
+
+    Getting this bound wrong is expensive in both directions. Too tight and a
+    quarter of ordinary fast trips get chopped into fragments (measured: a
+    0.52 km limit cut 26% of clean sample trips). Too loose and a GPS jump is
+    admitted as road, which is what let a 2-cell window report itself as a 40 km
+    "sub-route" in the top-100 lists.
+    """
+    import h3  # local import: config must stay importable before deps install
+    res = H3_RESOLUTION if resolution is None else resolution
+    travel = MAX_SPEED_KMH * (GPS_INTERVAL_SEC / 3600.0)
+    quantisation = 2.0 * h3.edge_length(res, unit="km")
+    return travel + quantisation
+
+
+# Drop trips flagged anomalous (teleport / impossible speed / idle / degenerate)
+# before encoding. They are not "interesting outliers" for route mining -- their
+# trajectories are physically impossible and pollute every downstream support
+# count. The anomaly STUDY (M11) still runs on the unfiltered feature table.
+EXCLUDE_ANOMALOUS = os.environ.get("EXCLUDE_ANOMALOUS", "1") not in ("0", "false", "False")
+
 # ------------------------------------------------------------------
-# 4. SPARK TUNING (local). DataProc overrides these via cluster config.
+# 5. SPARK TUNING (local). DataProc overrides these via cluster config.
 # ------------------------------------------------------------------
 # Env-overridable so a bigger local (dry-)run can use more memory/partitions
 # without code changes; DataProc ignores these (cluster mode sets its own).
-LOCAL_SHUFFLE_PARTITIONS = int(os.environ.get("SPARK_SHUFFLE_PARTS", "16"))
-LOCAL_DRIVER_MEM = os.environ.get("SPARK_DRIVER_MEM", "4g")
+LOCAL_SHUFFLE_PARTITIONS = int(os.environ.get("SPARK_SHUFFLE_PARTS", "64"))
+LOCAL_DRIVER_MEM = os.environ.get("SPARK_DRIVER_MEM", "8g")
+# Keep shuffle spill inside the project (plenty of disk) instead of /tmp.
+LOCAL_SPARK_TMP = os.environ.get("SPARK_LOCAL_DIR", str(PROJECT_ROOT / ".spark-tmp"))
 
 # ------------------------------------------------------------------
-# 5. ROUTE MINING (Phase 5 / M5-M7) - single source of truth
+# 6. ROUTE MINING - single source of truth (do NOT redeclare downstream)
 # ------------------------------------------------------------------
 ROUTE_LENGTH_THRESHOLDS_KM = [1, 3, 5, 10, 20, 40]  # min sub-route lengths
 TOP_K = 100                     # top-N routes reported per threshold
-MAX_SUBROUTE_KM = 45.0          # safety cap on window enumeration (> max threshold)
+# Safety cap on window enumeration. Must exceed the largest threshold with room
+# to spare: a window sitting exactly AT the cap has no recorded extension, so a
+# maximality test would wrongly promote it. Windows that hit the cap are marked
+# `truncated` and excluded from maximal output instead.
+MAX_SUBROUTE_KM = float(max(ROUTE_LENGTH_THRESHOLDS_KM)) * 1.5   # 60.0
 
-# --- M8 min-support X% + maximal ("popular long sub-route" per the PDF) ---
+# The exhaustive window miner is quadratic in cells-per-trip. Measured: it OOMs
+# at ~200k trips with an 8 GB driver, and would shuffle >100 GB at 1.71M. It is
+# kept as GROUND TRUTH for the sketches and the suffix array at small scale, and
+# refuses to start above this many trips rather than dying an hour in.
+EXACT_MAX_TRIPS = int(os.environ.get("EXACT_MAX_TRIPS", "50000"))
+
+# --- min-support X% + maximal ("popular long sub-route" per the PDF) ---
 # A sub-route is "popular" if >= X% of trips traversed it; we then keep the
 # MAXIMAL such routes (extend-and-still-frequent is impossible) => this maximises
 # length subject to support >= X%, and produces the "holes" where traffic forks.
-# X must be small on the 5k sample (sparse); it grows meaningful on the full data.
-SUPPORT_X_PCT = 0.5                       # default min-support, percent of trips
-SUPPORT_X_PCT_SWEEP = [0.2, 0.5, 1.0, 2.0]  # experiment values (PDF asks us to)
+SUPPORT_X_PCT = 0.5                       # reference X for the headline report
+# X is CALIBRATED PER LENGTH THRESHOLD from this descending grid: for each L we
+# take the largest X that still yields TOP_K routes of length >= L. A single
+# global X cannot serve both the 1 km and the 40 km config -- at X=0.5% on 1.71M
+# trips a 40 km corridor would need ~8.5k distinct trips, so that config comes
+# back empty. The PDF asks us to maximise length subject to >= X%, which only
+# has an answer if X is allowed to move with L.
+SUPPORT_X_PCT_GRID = [5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01]
 
-# --- M9 clustering (Method A): MinHash-LSH on directed bigram shingles ---
+# --- Method A clustering: MinHash-LSH on directed bigram shingles ---
 LSH_NUM_FEATURES = 1 << 18   # HashingTF dimensionality for shingles
 LSH_NUM_HASH_TABLES = 5      # MinHashLSH hash tables (more -> better recall)
 LSH_JACCARD_DIST_MAX = 0.3   # approxSimilarityJoin max Jaccard DISTANCE (=1-sim);
@@ -100,10 +235,13 @@ LSH_JACCARD_DIST_MAX = 0.3   # approxSimilarityJoin max Jaccard DISTANCE (=1-sim
 # Popular corridors are frequent, hence well-represented in any large sample, so
 # capping does not lose them. DataProc can raise this via the env var.
 CLUSTERING_MAX_TRIPS = int(os.environ.get("CLUSTERING_MAX_TRIPS", "50000"))
-CC_MAX_ITER = 15             # label-propagation sweeps for connected components
 CLUSTER_MIN_SIZE = 3         # ignore clusters smaller than this (noise)
+# Fraction of a cluster's members that must contain a cell run for it to be the
+# cluster's reported SUB-ROUTE. Reporting the seed's whole trajectory instead
+# would answer "which whole trips are similar", which the PDF explicitly excludes.
+CLUSTER_SUBROUTE_PCT = 0.6
 
-# --- M10 transition graph (Method C): PageRank zones + heavy-path routes ---
+# --- Method C transition graph: PageRank zones + heavy-path routes ---
 GRAPH_MIN_EDGE_SUPPORT = 5   # keep a cell->cell transition only if >= this trips
 PAGERANK_ITERS = 15          # power-iteration sweeps
 PAGERANK_DAMPING = 0.85      # standard damping factor
@@ -112,11 +250,20 @@ GRAPH_MIN_FLOW_PROB = 0.4    # extend a corridor only while >=40% of a cell's fl
                              # continues that way (dominant flow); below => fork/hole
 ACTIVITY_ZONES_TOP = 50      # number of activity-zone cells to report
 
-# --- M11 anomalous-route analysis ---
+# --- Method D suffix array (exact, scalable) ---
+# Suffixes are bucketed by their first SA_PREFIX_CELLS cells. Every occurrence of
+# a substring of >= SA_PREFIX_CELLS cells starts at exactly one suffix, and all
+# suffixes sharing that prefix land in one partition -> per-partition counting is
+# GLOBALLY exact with no cross-partition merge. Substrings shorter than that are
+# below the 1 km floor anyway (3 cells ~= 0.6 km at res 9).
+SA_PREFIX_CELLS = 3
+SA_MAX_CELLS = 200           # truncate each suffix (bounds per-suffix memory)
+
+# --- anomalous-route analysis ---
 ANOMALY_PCT = 0.99           # percentile fence for statistical outliers
 ANOMALY_METRO_MARGIN = 0.05  # deg beyond metro bbox before a route counts as drift
 
-# --- M7 approximate sketch sizing (all tunable) ---
+# --- approximate sketch sizing (all tunable) ---
 SKETCH_LG_MAX_K = 16            # frequent-items map size = 2^LG (~49k counters)
 CM_HASHES = 5                   # Count-Min depth  (failure prob ~ 2^-5)
 CM_LG_BUCKETS = 17             # Count-Min width per row = 2^17
