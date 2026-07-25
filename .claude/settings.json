@@ -51,7 +51,6 @@
       "Bash(curl *| sh)",
       "Bash(curl *| bash)",
       "Bash(wget *| sh)",
-      "Bash(git push *)",
       "Bash(gcloud *)",
       "Bash(gsutil *)"
     ]
