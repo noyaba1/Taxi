@@ -31,6 +31,18 @@ when the path has a URI scheme.
 
 ---
 
+## Step 0 — dry run (free, do this first)
+
+```bash
+PROJECT=my-project BUCKET=gs://my-bucket DRY_RUN=1 bash scripts/dataproc_submit.sh
+```
+
+Checks every precondition that can be checked without spending anything:
+gcloud/gsutil present, credentials active, project reachable, Dataproc and
+Storage APIs enabled, bucket exists, both local input files resolve, and the
+`src` package imports. It creates nothing. Almost every way a cloud run fails
+before it starts is caught here.
+
 ## One command
 
 ```bash

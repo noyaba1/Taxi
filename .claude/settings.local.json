@@ -18,7 +18,8 @@
       "Bash(.venv/bin/python -m src.experiment_cluster_cap --mid --caps 10000,25000,50000,100000)",
       "Bash(.venv/bin/python -m src.experiment_cluster_cap --mid --caps 10000,25000,50000)",
       "Bash(.venv/bin/python -m src.validate_holdout --sample)",
-      "Bash(.venv/bin/python -m src.validate_holdout --mid)"
+      "Bash(.venv/bin/python -m src.validate_holdout --mid)",
+      "Bash(.venv/bin/python -m pytest tests/test_storage.py -q)"
     ]
   }
 }

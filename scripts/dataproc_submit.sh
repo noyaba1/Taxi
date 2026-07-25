@@ -22,6 +22,7 @@ REGION="${REGION:-europe-west1}"
 CLUSTER="${CLUSTER:-porto}"
 SCALE="${SCALE:---full}"          # --sample for a cheap cloud rehearsal first
 WORKERS="${WORKERS:-5}"           # the brief asks for >=5 machines in the cluster
+DRY_RUN="${DRY_RUN:-0}"           # 1 = check everything, create and bill nothing
 # ---------------------------------------------------------------------------
 
 DATA="$BUCKET/porto"
@@ -33,6 +34,42 @@ if [[ "$PROJECT" == "your-project-id" || "$BUCKET" == "gs://your-bucket" ]]; the
   exit 2
 fi
 
+# ---------------------------------------------------------------------------
+# DRY_RUN=1 verifies every precondition that can be checked without spending a
+# cent: credentials, APIs, bucket, local input files, and that the code even
+# imports. Almost every failed cloud run in this project's history would have
+# been caught here. Run it first, every time.
+# ---------------------------------------------------------------------------
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "== DRY RUN: checking preconditions, creating nothing =="
+  fail=0
+  chk () { if eval "$2" >/dev/null 2>&1; then echo "  [OK]   $1"; else echo "  [FAIL] $1"; fail=1; fi; }
+
+  chk "gcloud installed"                 "command -v gcloud"
+  chk "gsutil installed"                 "command -v gsutil"
+  chk "authenticated"                    "gcloud auth list --filter=status:ACTIVE --format='value(account)' | grep -q ."
+  chk "project '$PROJECT' reachable"     "gcloud projects describe '$PROJECT'"
+  chk "dataproc API enabled"             "gcloud services list --enabled --project '$PROJECT' | grep -q dataproc"
+  chk "storage API enabled"              "gcloud services list --enabled --project '$PROJECT' | grep -q storage-component"
+  chk "bucket '$BUCKET' exists"          "gsutil ls -b '$BUCKET'"
+  chk "local train.csv resolves"         "python3 -c 'import os,sys; from src import config; sys.exit(0 if os.path.exists(config.RAW_TRAIN) else 1)'"
+  chk "local held-out csv resolves"      "python3 -c 'import os,sys; from src import config; sys.exit(0 if os.path.exists(config.RAW_TEST) else 1)'"
+  chk "src package imports"              "python3 -c 'import src.config, src.storage, src.run_pipeline'"
+  chk "zip available"                    "command -v zip"
+
+  echo
+  echo "  scale=$SCALE  workers=$WORKERS  region=$REGION"
+  echo "  data  -> $DATA"
+  echo "  out   -> $OUT"
+  echo
+  if [[ "$fail" == "1" ]]; then
+    echo "DRY RUN FAILED — fix the [FAIL] lines above before spending budget." >&2
+    exit 1
+  fi
+  echo "DRY RUN PASSED — rerun without DRY_RUN=1 to launch."
+  exit 0
+fi
+
 gcloud config set project "$PROJECT"
 
 echo "== package + upload code + raw data =="
@@ -40,8 +77,13 @@ zip -qr src.zip src -x "*/__pycache__/*"
 gsutil cp src.zip "$BUCKET/code/src.zip"
 # Resolve the raw file the same way config.py does, so the two cannot drift.
 RAW_LOCAL="$(python3 -c 'from src import config; print(config.RAW_TRAIN)')"
-echo "   local raw file: $RAW_LOCAL"
+TEST_LOCAL="$(python3 -c 'from src import config; print(config.RAW_TEST)')"
+echo "   local raw file : $RAW_LOCAL"
+echo "   held-out file  : $TEST_LOCAL"
 gsutil -q stat "$DATA/raw/train.csv" || gsutil -m cp "$RAW_LOCAL" "$DATA/raw/train.csv"
+# The held-out split feeds validate_holdout (the only check on unseen data).
+# Small file; upload it or that stage has nothing to validate against.
+gsutil -q stat "$DATA/raw/test.csv" || gsutil -m cp "$TEST_LOCAL" "$DATA/raw/test.csv"
 
 echo "== create cluster (1 master + $WORKERS workers) =="
 # h3 + datasketches are NOT on a stock DataProc image; install on every node.
@@ -62,7 +104,7 @@ trap 'echo "== deleting cluster =="; gcloud dataproc clusters delete "$CLUSTER" 
 # report and CSV goes through src/storage.py, which writes to Hadoop FS when the
 # path has a URI scheme.
 E="spark.yarn.appMasterEnv"; X="spark.executorEnv"
-COMMON="SPARK_ENV=cloud,DATA_BASE=$DATA,RAW_TRAIN=$DATA/raw/train.csv,OUTPUT_BASE=$OUT"
+COMMON="SPARK_ENV=cloud,DATA_BASE=$DATA,RAW_TRAIN=$DATA/raw/train.csv,RAW_TEST=$DATA/raw/test.csv,OUTPUT_BASE=$OUT"
 ENVPROPS=""
 for kv in ${COMMON//,/ }; do
   ENVPROPS="${ENVPROPS:+$ENVPROPS,}$E.$kv,$X.$kv"

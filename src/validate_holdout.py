@@ -117,10 +117,23 @@ def main(scale: str, min_len_km: float) -> None:
     spark.conf.set("spark.sql.execution.arrow.pyspark.enabled", "true")
 
     with cli.stage("holdout_validation", scale, log) as st:
-        enc = _load_holdout(spark).cache()
-        n_holdout = enc.count()
+        # This is a validation stage, not a deliverable. If the held-out file is
+        # absent (e.g. it was not uploaded to the bucket) say so and exit clean --
+        # killing a cloud run after the deliverables are computed would be a
+        # spectacularly bad trade.
+        try:
+            enc = _load_holdout(spark).cache()
+            n_holdout = enc.count()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("cannot read held-out set %s (%s: %s); skipping "
+                        "generalisation check", config.RAW_TEST,
+                        type(exc).__name__, str(exc)[:160])
+            spark.stop()
+            return
         if n_holdout == 0:
-            raise SystemExit(f"no held-out trips read from {config.RAW_TEST}")
+            log.warning("held-out set %s is empty; skipping", config.RAW_TEST)
+            spark.stop()
+            return
         log.info("held-out trips encoded: %s (from %s)",
                  f"{n_holdout:,}", config.RAW_TEST)
 

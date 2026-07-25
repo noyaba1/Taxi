@@ -115,7 +115,8 @@ def read_text(path: str) -> str:
     Read a small text object.
 
     The remote branch decodes JVM-SIDE via commons-io (a Hadoop dependency, so
-    always on a Spark classpath) and returns one finished string.
+    present on every Spark classpath we have seen) and returns one finished
+    string, with a portable byte-loop fallback if that jar is ever absent.
 
     Two approaches that look reasonable and are not:
       * `stream.read()` in a loop returns one int per byte -- a py4j round-trip
@@ -134,6 +135,19 @@ def read_text(path: str) -> str:
         stream = fs.open(jpath)
         try:
             return jvm.org.apache.commons.io.IOUtils.toString(stream, "UTF-8")
+        except Exception:  # noqa: BLE001
+            # commons-io ships with Hadoop and is on every Spark classpath we
+            # know of, but "every classpath we know of" is not a guarantee worth
+            # betting a paid cluster run on. Fall back to the slow-but-portable
+            # byte loop rather than fail a stage over a missing jar.
+            stream.close()
+            stream = fs.open(jpath)
+            data = bytearray()
+            b = stream.read()
+            while b != -1:
+                data.append(b & 0xFF)
+                b = stream.read()
+            return bytes(data).decode("utf-8")
         finally:
             stream.close()
     with open(path, encoding="utf-8") as fh:
