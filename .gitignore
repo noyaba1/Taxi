@@ -29,3 +29,6 @@ derby.log
 
 # --- The lecturer's dataset folder (as shipped by UCI) ---
 taxi+service+trajectory+prediction+challenge+ecml+pkdd+2015/
+
+# Machine-local Claude Code settings (permissions differ per developer)
+.claude/settings.local.json
