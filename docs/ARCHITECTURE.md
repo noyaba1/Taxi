@@ -258,7 +258,7 @@ memory · scalability · why this over alternatives.**
   per-trip enumeration; irrelevant to real trips (p95 distance ≈ 13 km).
 
 - **M6 — CLOSED (maximal) routes implemented & validated**
-  (`route_mining_suffix.py`, `verify_suffix_mining.py`).
+  (`route_mining_closed.py`, `verify_closed.py`).
   > **Naming correction.** This module builds no suffix structure. It computes
   > the set a suffix tree's branching nodes would give you, but by DataFrame
   > joins over M5's n-gram table — so it is a post-filter on M5, not an

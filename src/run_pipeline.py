@@ -40,7 +40,7 @@ STAGES = [
     ("Phase 2  statistics", "src.summarize_features", [], ALL),
     ("Phase 4  H3 encoding", "src.spatial_encoding", [], ALL),
     ("M5  exact mining (baseline)", "src.route_mining_exact", [], ("sample",)),
-    ("M6  closed sub-routes", "src.route_mining_suffix", [], ("sample",)),
+    ("M6  closed sub-routes", "src.route_mining_closed", [], ("sample",)),
     ("M7  approx vs exact", "src.route_mining_approx", [], ("sample",)),
     ("M7  approx (sketches only)", "src.route_mining_approx", ["--approx-only"],
      ("mid", "full")),
@@ -50,11 +50,15 @@ STAGES = [
     ("M10 transition graph (C)", "src.route_mining_graph", [], ALL),
     ("M11 anomalies", "src.anomaly_analysis", [], ALL),
     ("M16 method comparison", "src.evaluation", [], ALL),
+    # The only check that uses data the pipeline has never seen. Everything else
+    # recounts against the table the mining used, which cannot distinguish a real
+    # corridor from a memorised training path.
+    ("M17 held-out validation", "src.validate_holdout", [], ALL),
     ("M15 visualization", "src.visualization", [], ALL),
 ]
 VERIFIERS = [
     "src.verify_phase1", "src.verify_encoding", "src.verify_route_mining",
-    "src.verify_suffix_mining", "src.verify_approx_mining", "src.verify_maximal",
+    "src.verify_closed", "src.verify_approx_mining", "src.verify_maximal",
     "src.verify_clustering", "src.verify_graph", "src.verify_anomaly",
 ]
 

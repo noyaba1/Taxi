@@ -95,8 +95,8 @@ n-grams / maximal substrings, (C) גרף מעברים בין תאים. אלפב�
    `src/verify_route_mining.py`): ספירת כל תת-המסלולים הרציפים, `support = מספר
    נסיעות distinct` (dedup בתוך נסיעה), top-100 לכל סף. אומת ע"י ספירת containment
    עצמאית (brute-force) שהתאימה במדויק.
-9. **Closed-substring mining (M6)** (`src/route_mining_suffix.py`,
-   `src/verify_suffix_mining.py`): שמירת מסלולים **maximal/closed** בלבד —
+9. **Closed-substring mining (M6)** (`src/route_mining_closed.py`,
+   `src/verify_closed.py`): שמירת מסלולים **maximal/closed** בלבד —
    מסלול נשמר רק אם אין הרחבה בתא בודד (שמאל/ימין) עם support זהה.
    **שימו לב:** למרות שם הקובץ, המודול הזה **אינו** בונה suffix tree או suffix
    array — הוא מחשב את אותה קבוצת תוצאות דרך `groupBy`+join על טבלת ה-n-gram של
@@ -166,8 +166,8 @@ Taxi/
 **קבצי `src/` עיקריים:** `config.py`, `spark_session.py`, `load_data.py`,
 `make_sample.py`, `clean_data.py`, `verify_phase1.py`, `feature_engineering.py`,
 `summarize_features.py`, `spatial_encoding.py`, `verify_encoding.py`,
-`route_mining_exact.py`, `verify_route_mining.py`, `route_mining_suffix.py`,
-`verify_suffix_mining.py`, `route_mining_approx.py`, `verify_approx_mining.py`,
+`route_mining_exact.py`, `verify_route_mining.py`, `route_mining_closed.py`,
+`verify_closed.py`, `route_mining_approx.py`, `verify_approx_mining.py`,
 `validate_env.py`.
 
 **מה tracked ומה ignored:** ב-git נמצאים **רק source + docs**. **לא** נכנסים
@@ -207,7 +207,7 @@ python -m src.clean_data --sample     # Phase 1
 python -m src.feature_engineering --sample   # Phase 2
 python -m src.spatial_encoding --sample      # H3 (M3)
 python -m src.route_mining_exact --sample    # M5
-python -m src.route_mining_suffix --sample   # M6
+python -m src.route_mining_closed --sample   # M6
 python -m src.route_mining_approx --sample   # M7
 ```
 כל שלב יש לו `verify_*.py` מקביל להרצה אחרי.

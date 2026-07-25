@@ -10,7 +10,15 @@
       "Bash(git commit *)",
       "Bash([ -s \"$F\" ])",
       "Bash(grep -n '^submit\\\\|^if \\\\[\\\\[ \"$SCALE\"' scripts/dataproc_submit.sh)",
-      "Bash(.venv/bin/python -c ' *)"
+      "Bash(.venv/bin/python -c ' *)",
+      "Bash(git mv *)",
+      "Bash(.venv/bin/python -c \"import ast;ast.parse\\(open\\('src/route_mining_clustering.py'\\).read\\(\\)\\);print\\('restored OK'\\)\")",
+      "Bash(.venv/bin/python -m src.route_mining_clustering --sample)",
+      "Bash(.venv/bin/python -m src.experiment_cluster_cap --mid)",
+      "Bash(.venv/bin/python -m src.experiment_cluster_cap --mid --caps 10000,25000,50000,100000)",
+      "Bash(.venv/bin/python -m src.experiment_cluster_cap --mid --caps 10000,25000,50000)",
+      "Bash(.venv/bin/python -m src.validate_holdout --sample)",
+      "Bash(.venv/bin/python -m src.validate_holdout --mid)"
     ]
   }
 }

@@ -40,7 +40,7 @@ See [SETUP.md](SETUP.md) for the full environment (Java 17, Python 3.11).
 .venv/bin/python -m src.validate_env                    # env gate
 .venv/bin/python -m src.make_sample --sample            # 5,000 trips
 .venv/bin/python -m src.run_pipeline --sample --verify  # 14 stages + 9 verifiers
-.venv/bin/python -m pytest tests/ -q                    # 36 unit tests
+.venv/bin/python -m pytest tests/ -q                    # 49 unit tests
 ```
 
 Open `outputs/maps/porto_map_sample.html`.
@@ -74,7 +74,7 @@ a sub-route is a contiguous substring, "popular" = distinct-trip support, "long"
 
 All four report the same unit, so the cross-method comparison compares like with
 like. Supporting stages: `route_mining_exact.py` (exhaustive baseline, ground
-truth at small scale), `route_mining_suffix.py` (closed sub-routes),
+truth at small scale), `route_mining_closed.py` (closed sub-routes),
 `route_mining_approx.py` (Space-Saving + Count-Min sketches vs exact).
 
 ### Approximate structures
@@ -94,7 +94,7 @@ Greenwald-Khanna quantiles (anomaly fences) — each compared against exact.
 
 **Measured:** the exhaustive window miner emits ~34M window rows at 200k trips
 and OOMs on 16 GB; the suffix array indexes the same data as 2.8M suffixes in
-26 s. So M5/M6 run at `--sample` only (they are the ground truth the others are
+26 s. So the window-based miners run at `--sample` only (they are the ground truth the others are
 checked against), and `route_mining_exact` refuses to start above
 `EXACT_MAX_TRIPS` rather than failing an hour in. `run_pipeline` picks the right
 stages per scale automatically.
@@ -116,8 +116,17 @@ method**:
 - graph routes validated against real trips (anti-"Frankenstein");
 - anomaly self-consistency.
 
-Plus 36 unit tests on the pure functions, including brute-force cross-checks of
-the LCP-interval enumeration and the Aho-Corasick automaton.
+Plus 49 unit tests, including brute-force cross-checks of the LCP-interval
+enumeration and the Aho-Corasick automaton, and a regression test for the storage
+layer that decides whether cloud results survive teardown.
+
+**And one check that is not internal.** Every verifier above recounts against the
+same table the mining used — that catches bugs, not self-deception. So
+`validate_holdout.py` tests the mined corridors against the dataset's held-out
+split, which never enters the pipeline: unseen trips traverse mined corridors
+**3.0–6.0x** more often than random walks over the same city's own road
+adjacency. That is the only evidence here that the corridors are real rather than
+memorised.
 
 ### Corrupt data is removed, not just flagged
 
@@ -160,10 +169,11 @@ a URI scheme, so results land in GCS and survive cluster teardown.
 ```
 src/       config, storage, cli, cells, ahocorasick, spark_session, load_data,
            make_sample, clean_data, feature_engineering, summarize_features,
-           spatial_encoding, route_mining_{exact,suffix,suffix_array,approx,
+           spatial_encoding, route_mining_{exact,closed,suffix_array,approx,
            maximal,clustering,graph}, anomaly_analysis, evaluation,
            visualization, run_pipeline, validate_env, + verify_*.py per stage
-tests/     pytest unit tests (pure functions)
+tests/     pytest unit tests (pure functions + storage layer)
+.github/   CI: tests, every-module-imports, cloud/local stage-list consistency
 docs/      ARCHITECTURE, DESIGN_REVIEW, DATAPROC, FINAL_REPORT, …
 scripts/   dataproc_submit.sh
 notebooks/ porto_routes_colab.ipynb   (Colab Enterprise demo, all six configs)

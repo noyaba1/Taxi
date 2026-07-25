@@ -41,7 +41,7 @@ from pyspark.sql import functions as F
 
 from src import cli, config, storage
 from src.route_mining_exact import DELIM
-from src.route_mining_suffix import best_extensions, load_support_table, with_parents
+from src.route_mining_closed import best_extensions, load_support_table, with_parents
 from src.spark_session import get_spark
 
 THRESHOLDS = config.ROUTE_LENGTH_THRESHOLDS_KM

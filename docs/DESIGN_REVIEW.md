@@ -127,7 +127,7 @@ Memory · Spark scalability · Shuffle · Failure cases · Optimizations.**
 
 > **Status note (post-audit).** This section planned "n-gram counting as the
 > workhorse + a generalized suffix array to extract maximal routes". Only the
-> first half was built: `route_mining_suffix.py` computes the closed-substring
+> first half was built: `route_mining_closed.py` computes the closed-substring
 > set with parent/child DataFrame joins over the n-gram table and contains no
 > suffix structure at all — its name was misleading and the assignment's
 > "Suffix Tree / Suffix Array" requirement went unmet.

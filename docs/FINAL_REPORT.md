@@ -300,6 +300,63 @@ and the full run is what settles it.
 
 ---
 
+## 9b. Two things we measured instead of asserting
+
+### Do the corridors generalise? (`validate_holdout.py`)
+
+Every other check in this project is internal — verifiers recount support against
+the same table the mining used. That catches implementation bugs but cannot tell
+a real corridor from a memorised training path.
+
+The dataset ships a held-out split that never enters the pipeline
+(`Porto_taxi_data_test_partial_trajectories.csv`, 318 usable trips). Encoding it
+with the same grid and asking what fraction of unseen trips traverse a mined
+corridor:
+
+| method | corridors | held-out coverage | null model | lift |
+|---|---|---|---|---|
+| A clustering | 295 | 37.7% | 6.3% | **6.0x** |
+| C graph | 265 | 28.1% | 9.3% | **3.0x** |
+| D suffix array | 318 | 36.8% | 6.3% | **5.8x** |
+
+(corridors mined at mid scale; sample-scale lifts are 3.8 / 3.2 / 5.6x — the lift
+*improves* with training volume, which is what should happen.)
+
+The null model matters: coverage alone proves nothing, because corridors sit on
+busy roads and so do most trips. The null is random walks over the held-out
+city's **own observed adjacency**, matched to the real corridors' length
+distribution — plausible routes that simply were not mined as popular. Uniform
+random cells would be disconnected and unmatchable, inflating the lift into
+meaninglessness.
+
+### Is Method A's sampling cap defensible? (`experiment_cluster_cap.py`)
+
+Method A caps clustering at 50,000 trips because the LSH self-join is quadratic.
+The defence was an argument — "popular corridors are frequent, so they survive
+sampling" — and never a measurement. Running the real discovery at several caps
+on the 200k dataset:
+
+| cap | corridors | wall_s | recall (Jaccard≥0.5) | recall (exact) |
+|---|---|---|---|---|
+| 10,000 | 509 | 11.9 | 0.81 | 0.06 |
+| 25,000 | 1,431 | 20.7 | 0.94 | 0.22 |
+| 50,000 | 3,055 | 72.1 | _reference_ | — |
+| 100,000 | 6,018 | 297.0 | (0.98 recall *from* 50k) | — |
+
+**The gap between the two recall columns is the finding.** Sampling reliably
+finds corridors in the same *places* but rarely with the same *extent* — which
+trips are present determines how far a run stays shared by 60% of a cluster. So
+Method A's corridor **geography** is trustworthy; its precise route **strings**
+are sample-dependent. That is also why cross-method comparison matches
+geometrically rather than by string equality: a design choice this experiment
+turned from a convenience into a justified one.
+
+On the cap itself: 100k costs ~5x what 50k costs (the quadratic join, as
+predicted) and recovers 2% more corridors. The discovery curve flattens well
+before the cost curve, so 50,000 stays.
+
+---
+
 ## 10. Honest limitations
 
 1. **The full 1.71M DataProc run has not been executed.** Everything is validated
@@ -317,12 +374,16 @@ and the full run is what settles it.
 4. **Method A clusters a capped subset** (`CLUSTERING_MAX_TRIPS = 50,000`)
    because the LSH self-join grows quadratically. Its `support` is measured on
    all trips, but `cluster_size` is a sample statistic; the report says so.
-5. **Methods A and C collect a pruned graph to the driver.** Bounded by
+5. **Method A's route extents are sample-dependent** (§9b) even though its
+   corridor geography is stable. Report it as "where the busy corridors are",
+   not as a canonical route list.
+6. **Methods A and C collect a pruned graph to the driver.** Bounded by
    `EDGE_COLLECT_CAP`, but a distributed community detection would be needed
    beyond that.
-6. **The ground-truth files** (`solution_*.csv`) are resolved by `config.py` but
-   unused — no destination/ETA accuracy study.
-7. **The suffix array truncates suffixes at 200 cells** (~60 km), matching the
+7. **The `solution_*.csv` ground truth is still unused.** The held-out
+   *trajectories* are now used (§9b); the destination/travel-time labels are a
+   different (prediction) task and remain out of scope.
+8. **The suffix array truncates suffixes at 200 cells** (~60 km), matching the
    window cap. Corridors longer than that are out of scope by construction.
 
 ---

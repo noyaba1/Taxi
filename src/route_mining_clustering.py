@@ -141,141 +141,161 @@ def longest_shared_run(sequences, min_members):
     return best
 
 
+def discover(spark, scale: str):
+    """
+    Run Method A's full discovery and RETURN the result without writing anything.
+
+    Split out of main() so the sampling-cap experiment can drive the real
+    pipeline at several caps -- an experiment that measures a reimplementation
+    measures the reimplementation, not the method.
+
+    Returns (routes, meta):
+      routes = [(support, cluster_size, members_with_run, length_km, n_cells,
+                 subroute)] with `support` counted against ALL trips
+      meta   = {n_all, n_clustered, n_edges, n_clusters}
+    """
+    paths = config.dataset_paths(scale)
+    trips = (spark.read.parquet(paths["encoded"])
+             .select("TRIP_ID", "h3_seq_compact", "encoded_len_km")
+             .filter(F.size("h3_seq_compact") >= 2)
+             # Deterministic id: monotonically_increasing_id() changes if the
+             # frame is ever recomputed, and it is used as a JOIN KEY between
+             # the LSH edge list and the member lookup.
+             .withColumn("nid", F.xxhash64("TRIP_ID"))).cache()
+    n_all = trips.count()
+
+    # Bound the LSH self-join: its edge count grows ~quadratically with #trips,
+    # so above the cap we cluster a representative sample. Whether that loses
+    # corridors is measured, not assumed -- see experiment_cluster_cap.py.
+    clustered_pop = trips
+    if n_all > config.CLUSTERING_MAX_TRIPS:
+        clustered_pop = trips.sample(config.CLUSTERING_MAX_TRIPS / n_all,
+                                     seed=42).cache()
+    n_trips = clustered_pop.count()
+
+    # ---- 1-2. shingles -> hashed binary features ----
+    feats = (clustered_pop.withColumn("shingles", bigram_shingles("h3_seq_compact"))
+             .filter(F.size("shingles") >= 1))
+    htf = HashingTF(inputCol="shingles", outputCol="features",
+                    numFeatures=config.LSH_NUM_FEATURES, binary=True)
+    feats = htf.transform(feats).cache()
+
+    # ---- 3. MinHash-LSH approximate similarity self-join (distributed) ----
+    lsh = MinHashLSH(inputCol="features", outputCol="hashes",
+                     numHashTables=config.LSH_NUM_HASH_TABLES)
+    model = lsh.fit(feats)
+    pairs = (model.approxSimilarityJoin(feats, feats,
+                                        config.LSH_JACCARD_DIST_MAX, "jdist")
+             .select(F.col("datasetA.nid").alias("src"),
+                     F.col("datasetB.nid").alias("dst"))
+             .filter(F.col("src") < F.col("dst")))
+    n_edges = pairs.count()
+    if n_edges > EDGE_COLLECT_CAP:
+        raise RuntimeError(
+            f"similarity graph too large to collect ({n_edges:,} > "
+            f"{EDGE_COLLECT_CAP:,}); tighten LSH_JACCARD_DIST_MAX or lower "
+            f"CLUSTERING_MAX_TRIPS")
+
+    # ---- 4. greedy star clustering on the pruned graph (driver-side, bounded) ----
+    edge_list = [(r["src"], r["dst"]) for r in pairs.collect()]
+    clusters = star_cluster(edge_list, config.CLUSTER_MIN_SIZE)
+    meta = {"n_all": n_all, "n_clustered": n_trips, "n_edges": n_edges,
+            "n_clusters": len(clusters)}
+    log.info("edges=%s -> clusters=%s", f"{n_edges:,}", f"{len(clusters):,}")
+    if not clusters:
+        return [], meta
+
+    # ---- 5. per cluster: the sub-route its members share ----
+    membership = spark.createDataFrame(
+        [(cid, int(nid)) for cid, (_seed, members) in clusters.items()
+         for nid in members],
+        schema=T.StructType([T.StructField("cid", T.IntegerType()),
+                             T.StructField("nid", T.LongType())]))
+    pct = config.CLUSTER_SUBROUTE_PCT
+    min_len = float(min(THRESHOLDS))
+
+    run_schema = T.StructType([
+        T.StructField("cid", T.IntegerType()),
+        T.StructField("cluster_size", T.IntegerType()),
+        T.StructField("members_with_run", T.IntegerType()),
+        T.StructField("n_cells", T.IntegerType()),
+        T.StructField("length_km", T.DoubleType()),
+        T.StructField("subroute", T.StringType()),
+    ])
+
+    def _cluster_run(pdf):
+        import math
+
+        import pandas as pd
+
+        cid = int(pdf["cid"].iloc[0])
+        seqs = []
+        for seq in pdf["h3_seq_compact"]:
+            # Only gap-free stretches can host a shared corridor.
+            seqs.extend(cells_mod.split_at_gaps(list(seq)))
+        size = len(pdf)
+        need = max(2, math.ceil(pct * size))
+        best = longest_shared_run(seqs, need)
+        if not best:
+            return pd.DataFrame(columns=run_schema.fieldNames())
+        run, n_with = best
+        length = cells_mod.path_length_km(list(run))
+        if length < min_len:
+            return pd.DataFrame(columns=run_schema.fieldNames())
+        return pd.DataFrame([(cid, size, int(n_with), len(run), float(length),
+                              DELIM.join(run))],
+                            columns=run_schema.fieldNames())
+
+    runs = (membership.join(trips.select("nid", "h3_seq_compact"), "nid")
+            .groupBy("cid").applyInPandas(_cluster_run, schema=run_schema)
+            .collect())
+
+    # ---- 6. global support: how many of ALL trips contain each run? ----
+    patterns = [tuple(r["subroute"].split(DELIM)) for r in runs]
+    support = {}
+    if patterns:
+        token_rdd = trips.select("h3_seq_compact").rdd.map(lambda r: list(r[0]))
+        support = dict(ahocorasick.containment_support(token_rdd, patterns).collect())
+
+    routes = [(support.get(i, 0), r["cluster_size"], r["members_with_run"],
+               float(r["length_km"]), r["n_cells"], r["subroute"])
+              for i, r in enumerate(runs)]
+    return routes, meta
+
+
 def main(scale: str) -> None:
     spark = get_spark("route-mining-clustering")
-    paths = config.dataset_paths(scale)
 
     with cli.stage("m9_clustering", scale, log) as st:
         t0 = time.time()
-        trips = (spark.read.parquet(paths["encoded"])
-                 .select("TRIP_ID", "h3_seq_compact", "encoded_len_km")
-                 .filter(F.size("h3_seq_compact") >= 2)
-                 # Deterministic id: monotonically_increasing_id() changes if the
-                 # frame is ever recomputed, and it is used as a JOIN KEY between
-                 # the LSH edge list and the member lookup.
-                 .withColumn("nid", F.xxhash64("TRIP_ID"))).cache()
-        n_all = trips.count()
+        crows, meta = discover(spark, scale)
+        n_all, n_trips = meta["n_all"], meta["n_clustered"]
 
-        # Bound the LSH self-join: its edge count grows ~quadratically with #trips,
-        # so on the full dataset we cluster a representative sample. Popular
-        # corridors are frequent, hence well represented in any large sample.
-        clustered_pop = trips
-        if n_all > config.CLUSTERING_MAX_TRIPS:
-            clustered_pop = trips.sample(config.CLUSTERING_MAX_TRIPS / n_all,
-                                         seed=42).cache()
-            log.info("clustering a representative sample: %s of %s trips",
-                     f"{clustered_pop.count():,}", f"{n_all:,}")
-        n_trips = clustered_pop.count()
-
-        # ---- 1-2. shingles -> hashed binary features ----
-        feats = (clustered_pop.withColumn("shingles", bigram_shingles("h3_seq_compact"))
-                 .filter(F.size("shingles") >= 1))
-        htf = HashingTF(inputCol="shingles", outputCol="features",
-                        numFeatures=config.LSH_NUM_FEATURES, binary=True)
-        feats = htf.transform(feats).cache()
-
-        # ---- 3. MinHash-LSH approximate similarity self-join (distributed) ----
-        lsh = MinHashLSH(inputCol="features", outputCol="hashes",
-                         numHashTables=config.LSH_NUM_HASH_TABLES)
-        model = lsh.fit(feats)
-        pairs = (model.approxSimilarityJoin(feats, feats,
-                                            config.LSH_JACCARD_DIST_MAX, "jdist")
-                 .select(F.col("datasetA.nid").alias("src"),
-                         F.col("datasetB.nid").alias("dst"))
-                 .filter(F.col("src") < F.col("dst")))
-        n_edges = pairs.count()
-        if n_edges > EDGE_COLLECT_CAP:
-            raise RuntimeError(
-                f"similarity graph too large to collect ({n_edges:,} > "
-                f"{EDGE_COLLECT_CAP:,}); tighten LSH_JACCARD_DIST_MAX or lower "
-                f"CLUSTERING_MAX_TRIPS")
-
-        # ---- 4. greedy star clustering on the pruned graph (driver-side, bounded) ----
-        edge_list = [(r["src"], r["dst"]) for r in pairs.collect()]
-        clusters = star_cluster(edge_list, config.CLUSTER_MIN_SIZE)
-        log.info("edges=%s -> clusters=%s", f"{n_edges:,}", f"{len(clusters):,}")
-        if not clusters:
+        if not crows:
             log.warning("no clusters at size>=%d; nothing to report",
                         config.CLUSTER_MIN_SIZE)
             _write_empty(scale)
             spark.stop()
             return
 
-        # ---- 5. per cluster: the sub-route its members share ----
-        membership = spark.createDataFrame(
-            [(cid, int(nid)) for cid, (_seed, members) in clusters.items()
-             for nid in members],
-            schema=T.StructType([T.StructField("cid", T.IntegerType()),
-                                 T.StructField("nid", T.LongType())]))
-        pct = config.CLUSTER_SUBROUTE_PCT
-        min_len = float(min(THRESHOLDS))
-
-        run_schema = T.StructType([
-            T.StructField("cid", T.IntegerType()),
-            T.StructField("cluster_size", T.IntegerType()),
-            T.StructField("members_with_run", T.IntegerType()),
-            T.StructField("n_cells", T.IntegerType()),
-            T.StructField("length_km", T.DoubleType()),
-            T.StructField("subroute", T.StringType()),
-        ])
-
-        def _cluster_run(pdf):
-            import math
-
-            import pandas as pd
-
-            cid = int(pdf["cid"].iloc[0])
-            seqs = []
-            for seq in pdf["h3_seq_compact"]:
-                # Only gap-free stretches can host a shared corridor.
-                seqs.extend(cells_mod.split_at_gaps(list(seq)))
-            size = len(pdf)
-            need = max(2, math.ceil(pct * size))
-            best = longest_shared_run(seqs, need)
-            if not best:
-                return pd.DataFrame(columns=run_schema.fieldNames())
-            run, n_with = best
-            length = cells_mod.path_length_km(list(run))
-            if length < min_len:
-                return pd.DataFrame(columns=run_schema.fieldNames())
-            return pd.DataFrame([(cid, size, int(n_with), len(run), float(length),
-                                  DELIM.join(run))],
-                                columns=run_schema.fieldNames())
-
-        runs = (membership.join(trips.select("nid", "h3_seq_compact"), "nid")
-                .groupBy("cid").applyInPandas(_cluster_run, schema=run_schema)
-                .collect())
-        log.info("clusters yielding a shared sub-route >= %.0f km: %s",
-                 min_len, f"{len(runs):,}")
-
-        # ---- 6. global support: how many of ALL trips contain each run? ----
-        patterns = [tuple(r["subroute"].split(DELIM)) for r in runs]
-        support = {}
-        if patterns:
-            token_rdd = trips.select("h3_seq_compact").rdd.map(lambda r: list(r[0]))
-            support = dict(ahocorasick.containment_support(token_rdd, patterns).collect())
-
-        crows = []
-        for i, r in enumerate(runs):
-            crows.append((support.get(i, 0), r["cluster_size"], r["members_with_run"],
-                          float(r["length_km"]), r["n_cells"], r["subroute"]))
-
         log.info("=" * 60)
         log.info("trips (clustered)   : %s of %s", f"{n_trips:,}", f"{n_all:,}")
         log.info("similarity edges    : %s  (Jaccard dist <= %s)",
-                 f"{n_edges:,}", config.LSH_JACCARD_DIST_MAX)
-        log.info("clusters (size>=%d)  : %s", config.CLUSTER_MIN_SIZE, f"{len(clusters):,}")
+                 f"{meta['n_edges']:,}", config.LSH_JACCARD_DIST_MAX)
+        log.info("clusters (size>=%d)  : %s", config.CLUSTER_MIN_SIZE,
+                 f"{meta['n_clusters']:,}")
         log.info("reported sub-routes : %s", f"{len(crows):,}")
         log.info("=" * 60)
 
+        pct = config.CLUSTER_SUBROUTE_PCT
         rep = [f"# M9 Method A: Clustering Route Discovery ({scale})",
                f"_generated: {datetime.now(timezone.utc).isoformat(timespec='seconds')}_",
                "",
                f"trips clustered: {n_trips:,} of {n_all:,} "
                f"(cap CLUSTERING_MAX_TRIPS={config.CLUSTERING_MAX_TRIPS:,}) | "
                f"LSH tables={config.LSH_NUM_HASH_TABLES} "
-               f"jdist<={config.LSH_JACCARD_DIST_MAX} | edges: {n_edges:,} | "
-               f"clusters: {len(clusters):,}",
+               f"jdist<={config.LSH_JACCARD_DIST_MAX} | edges: {meta['n_edges']:,} | "
+               f"clusters: {meta['n_clusters']:,}",
                "",
                f"Each cluster reports the longest cell run shared by >={pct:.0%} of its",
                "members -- a SUB-route, not a whole trip. `support` is then measured",
@@ -286,7 +306,8 @@ def main(scale: str) -> None:
             rep += [f"> **Caveat:** clustering ran on a {n_trips / n_all:.1%} sample of "
                     f"trips ({n_trips:,}/{n_all:,}); `cluster_size` is therefore a "
                     f"sample statistic. `support` is not -- it is measured on all "
-                    f"{n_all:,} trips.", ""]
+                    f"{n_all:,} trips. Whether the cap loses corridors is measured "
+                    f"in `experiment_cluster_cap_*.md`.", ""]
         rep += ["| min_len_km | #routes(>=L) | top_support | longest_km |",
                 "|---|---|---|---|"]
 
@@ -311,8 +332,8 @@ def main(scale: str) -> None:
         log.info("\n%s", "\n".join(rep))
         log.info("wrote clusters -> %s", csv_path)
         log.info("wrote report   -> %s", rp)
-        st.update(trips=n_trips, trips_total=n_all, edges=n_edges,
-                  clusters=len(clusters), routes=len(crows),
+        st.update(trips=n_trips, trips_total=n_all, edges=meta["n_edges"],
+                  clusters=meta["n_clusters"], routes=len(crows),
                   mining_s=round(time.time() - t0, 1))
 
     spark.stop()

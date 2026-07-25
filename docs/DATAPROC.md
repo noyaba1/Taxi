@@ -71,20 +71,26 @@ in `gs://…/outputs/routes/`. Only then run `--full`.
 
 ```
 clean_data · feature_engineering · summarize_features · spatial_encoding
-route_mining_suffix_array · route_mining_maximal · route_mining_clustering
-route_mining_graph · anomaly_analysis · route_mining_approx --approx-only
-evaluation · visualization
+route_mining_suffix_array · route_mining_clustering · route_mining_graph
+anomaly_analysis · evaluation · visualization
+route_mining_approx --approx-only          <- last: expensive, not a deliverable
 ```
 
-It deliberately **omits `route_mining_exact` and `route_mining_suffix` at
-`--full`**. Those enumerate every contiguous window of every trip — O(n²) in
-cells per trip. Measured on this project:
+Two deliberate omissions at `--full`:
+
+**The window-enumeration family** — `route_mining_exact`, `route_mining_closed`,
+`route_mining_maximal` — all build the same O(n²) support table:
 
 | | 4,745 trips | 188,761 trips |
 |---|---|---|
 | windows emitted | 916,815 | 33,597,872 |
 | exact miner | 7.5 s | **OOM (Java heap)** |
-| suffix array | 9.0 s | **26 s** |
+| maximal-frequent | 32.7 s | **21 GB spilled, unfinished** |
+| suffix array | 9.0 s | **41 s** |
+
+**`--compare-grids`** — the grid/conflation sweep re-encodes the whole dataset
+once per candidate (H3 8/9/10 + geohash 6/7). Five extra full passes to justify a
+design choice whose answer is the same on the sample, where it already ran.
 
 At 1.71M trips that is order 10⁸–10⁹ rows and >100 GB of shuffle. The **suffix
 array is the exact path at scale** and gives identical supports (verified: 0

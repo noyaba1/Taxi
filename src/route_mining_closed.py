@@ -1,5 +1,5 @@
 """
-route_mining_suffix.py  --  PHASE 5 / Milestone M6  (CLOSED sub-routes)
+route_mining_closed.py  --  PHASE 5 / Milestone M6  (CLOSED sub-routes)
 ======================================================================
 Keeps only CLOSED (maximal) frequent sub-routes from the M5 n-gram support
 table, so we don't report dozens of overlapping fragments of one corridor.
@@ -35,7 +35,7 @@ never enumerated) are EXCLUDED: absence of a recorded extension is not evidence
 of maximality.
 
 Run:
-    python -m src.route_mining_suffix --sample
+    python -m src.route_mining_closed --sample
 """
 import time
 from datetime import datetime, timezone
@@ -142,7 +142,7 @@ def main(scale: str) -> None:
                                  r["n_cells"], r["subroute"]))
 
         csv_path = storage.write_csv(
-            storage.out_path("routes", f"suffix_maximal_top100_{scale}.csv"),
+            storage.out_path("routes", f"closed_top100_{scale}.csv"),
             ["min_len_km", "rank", "support", "length_km", "n_cells", "subroute"],
             all_rows)
         rp = storage.write_lines(

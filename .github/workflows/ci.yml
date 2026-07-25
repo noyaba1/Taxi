@@ -1,0 +1,86 @@
+name: CI
+
+# Two things worth catching automatically, because both broke during development
+# and neither is visible from reading a diff:
+#   1. the pure algorithms (LCP intervals, Aho-Corasick, gap splitting) silently
+#      returning wrong answers;
+#   2. the storage layer -- which decides whether cloud results survive teardown
+#      -- silently writing or reading nothing.
+#
+# The full pipeline is NOT run here: it needs the 1.9 GB dataset, which is not in
+# the repo. The tests cover the logic that does not need it.
+
+on:
+  push:
+    branches: [main, Noya, audit-remediation]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Spark 3.5.1 supports Java 8/11/17 ONLY. A newer JDK fails deep in the
+      # JVM with errors that look like a bug in this code -- pin it explicitly
+      # rather than inherit whatever the runner ships.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # PySpark 3.5.1 supports Python 3.8-3.12; 3.13 fails via cryptic Py4J
+      # errors, and only once a pandas_udf actually executes.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Unit tests (pure functions + storage layer)
+        run: pytest tests/ -q
+
+      # Catches import cycles, syntax errors and bad argparse wiring across every
+      # stage without needing the dataset. A stage that cannot even be imported
+      # would otherwise only fail once it reached a cluster.
+      - name: Every stage imports and exposes its CLI
+        run: |
+          python - <<'PY'
+          import importlib, pkgutil, sys
+          import src
+          failed = []
+          for m in pkgutil.iter_modules(src.__path__):
+              name = f"src.{m.name}"
+              try:
+                  importlib.import_module(name)
+              except Exception as exc:
+                  failed.append(f"{name}: {type(exc).__name__}: {exc}")
+          if failed:
+              print("\n".join(failed)); sys.exit(1)
+          print("all modules import cleanly")
+          PY
+
+      - name: Pipeline stage lists are consistent with the cloud script
+        run: |
+          python - <<'PY'
+          import re, sys
+          from src.run_pipeline import STAGES
+          # Leading whitespace matters: some stages are submitted inside an
+          # `if [[ "$SCALE" == ... ]]` block and are therefore indented.
+          submitted = set(re.findall(r'^\s*submit (\w+)\.py',
+                                     open('scripts/dataproc_submit.sh').read(), re.M))
+          local_full = {mod.split('.')[-1] for _l, mod, _e, scales in STAGES
+                        if 'full' in scales}
+          missing = local_full - submitted
+          if missing:
+              print("stages the local --full pipeline runs but the cloud script "
+                    "never submits (a deliverable would silently not exist):",
+                    sorted(missing))
+              sys.exit(1)
+          print("cloud script covers every full-scale stage")
+          PY

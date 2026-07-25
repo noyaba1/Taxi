@@ -106,6 +106,7 @@ submit route_mining_clustering.py
 submit route_mining_graph.py
 submit anomaly_analysis.py
 submit evaluation.py
+submit validate_holdout.py    # generalisation check on unseen trips
 submit visualization.py
 
 # Approximate structures LAST. --approx-only skips the exact groupBy, but the
@@ -120,7 +121,7 @@ submit route_mining_approx.py --approx-only
 # exactly, from a single pass, at a fraction of the cost.
 if [[ "$SCALE" != "--full" ]]; then
   submit route_mining_exact.py
-  submit route_mining_suffix.py
+  submit route_mining_closed.py
   submit route_mining_maximal.py
 fi
 

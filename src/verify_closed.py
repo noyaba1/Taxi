@@ -1,5 +1,5 @@
 """
-verify_suffix_mining.py  --  M6 verification (against M5)
+verify_closed.py  --  M6 verification (against M5)
 ========================================================
 Independently validates the maximal-route output.
 
@@ -14,14 +14,14 @@ Checks:
      it is contained in an M6 maximal route with (near-)equal support
 
 Run:
-    python -m src.verify_suffix_mining --sample
+    python -m src.verify_closed --sample
 """
 
 from pyspark.sql import functions as F
 
 from src import cli, config, storage
 from src.spark_session import get_spark
-from src.route_mining_suffix import SUPPORT_TOL
+from src.route_mining_closed import SUPPORT_TOL
 from src.route_mining_exact import DELIM
 
 
@@ -37,7 +37,7 @@ def main(scale: str) -> None:
     res = config.H3_RESOLUTION
 
     enc_path = config.dataset_paths(scale)["encoded"]
-    m6_csv = storage.out_path("routes", f"suffix_maximal_top100_{scale}.csv")
+    m6_csv = storage.out_path("routes", f"closed_top100_{scale}.csv")
     m5_csv = storage.out_path("routes", f"exact_top100_{scale}.csv")
 
     trips = spark.read.parquet(enc_path).withColumn(
