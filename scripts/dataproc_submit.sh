@@ -87,14 +87,32 @@ submit () {  # $1 = module file under src/ ; $2.. = extra args
 submit clean_data.py
 submit feature_engineering.py
 submit summarize_features.py
-submit spatial_encoding.py --compare-grids
+
+# The grid/conflation sweep re-encodes the WHOLE dataset once per candidate
+# (H3 8/9/10 + geohash 6/7) and adds a distinct-cell count and a bearing-entropy
+# groupBy to each. That is five extra full passes to justify a design choice --
+# and the justification is qualitatively identical on a sample, where it already
+# ran. Paying for it at 1.71M is burning budget for no extra information.
+if [[ "$SCALE" == "--full" ]]; then
+  submit spatial_encoding.py
+else
+  submit spatial_encoding.py --compare-grids
+fi
+
+# Deliverable-producing stages FIRST, so a failure in the expensive demonstration
+# below cannot cost us the actual results.
 submit route_mining_suffix_array.py      # exact + scalable: carries the deliverable
 submit route_mining_clustering.py
 submit route_mining_graph.py
 submit anomaly_analysis.py
-submit route_mining_approx.py --approx-only
 submit evaluation.py
 submit visualization.py
+
+# Approximate structures LAST. --approx-only skips the exact groupBy, but the
+# sketches still stream every enumerated window, which makes this the second most
+# expensive stage at full scale. It stays because demonstrating the sketches at
+# scale is an assignment requirement -- but by now the deliverables are in GCS.
+submit route_mining_approx.py --approx-only
 
 # The window-enumeration family (exact / closed / maximal-frequent) shares one
 # O(n^2) support table. It is the ground truth the other methods are validated

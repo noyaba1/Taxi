@@ -1,10 +1,9 @@
 # ============================================================
 # Porto Taxi Big Data Project - LOCAL development requirements
 # ============================================================
-# IMPORTANT: PySpark officially supports Python 3.8 - 3.12.
-# You currently have Python 3.13.1 which is NOT officially supported
-# by PySpark and may crash. Strongly recommended: create a venv/conda
-# env with Python 3.11. See README "Phase 0".
+# REQUIRES Python 3.8-3.12 (use 3.11) and Java 8/11/17. Newer versions of
+# either fail in confusing ways -- see SETUP.md. `python -m src.validate_env`
+# checks both before you run anything.
 # ------------------------------------------------------------
 
 # --- Core engine (local Spark, same API as DataProc) ---

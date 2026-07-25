@@ -123,7 +123,24 @@ Memory · Spark scalability · Shuffle · Failure cases · Optimizations.**
 
 ---
 
-## 5. Suffix-based method (Method B)
+## 5. Substring-counting methods (B) and the suffix array (D)
+
+> **Status note (post-audit).** This section planned "n-gram counting as the
+> workhorse + a generalized suffix array to extract maximal routes". Only the
+> first half was built: `route_mining_suffix.py` computes the closed-substring
+> set with parent/child DataFrame joins over the n-gram table and contains no
+> suffix structure at all — its name was misleading and the assignment's
+> "Suffix Tree / Suffix Array" requirement went unmet.
+>
+> `route_mining_suffix_array.py` (Method **D**) now delivers what this section
+> described: a distributed generalised suffix array with an LCP array, mining
+> maximal routes from LCP intervals, bucketed by 3-cell prefix so per-partition
+> counting is globally exact. The concern below about "distributed global suffix
+> array construction being genuinely hard" was well founded — the bucketing is
+> what sidesteps it — and the concern about "6 length thresholds = 6 passes" is
+> resolved by carrying each route's best extension so the whole X grid is one
+> filter over one pass.
+
 
 - **Choice:** distributed **n-gram (k-gram) counting** as the workhorse +
   **generalized suffix array** (per partition) to extract *maximal* frequent

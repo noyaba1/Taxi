@@ -19,7 +19,7 @@ and **anomalous routes**. The final run must execute on **Google Cloud DataProc
 
 After encoding, **each trip becomes a string of H3 cells**. So a "sub-route" is a
 substring, "popular" = how many trips contain it, "long" = ground length ≥ L km.
-That single representation feeds all three methods. Data flows through a medallion
+That single representation feeds all four methods (A clustering, B maximal-frequent, C transition graph, D suffix array). Data flows through a medallion
 pipeline (raw → clean → features → encoded → mining), every stage reading/writing
 **Parquet**, and **one file (`config.py`) holds all paths** — switching to the
 cloud is just two environment variables.
@@ -46,7 +46,7 @@ with an independent `verify_*.py` checker.
 | **Feature engineering** | distance, speed, bbox, sinuosity, anomaly flags | trip-level signals | ✅ | `…_features.parquet` |
 | **H3 encoding** | trajectory → ordered H3 cell sequence (res 9) | discretise routes for comparison | ✅ | `…_encoded_r9_*.parquet` |
 | **Method B** | exact + closed + **min-support X% maximal** sub-route mining | the PDF's "popular long sub-route" (with "holes") | ✅ | `maximal_frequent_top100`, `exact_top100` |
-| **Method A** | MinHash-LSH clustering of similar trips | corridors from whole-trajectory similarity | ✅ | `clustering_top100` |
+| **Method A** | MinHash-LSH clustering of similar trips, then the longest cell run shared by >=60% of a cluster | corridors as SUB-routes (not whole trips) | ✅ | `clustering_top100` |
 | **Method C** | transition graph → PageRank zones + heavy-path routes | movement-network view + **activity zones** | ✅ | `graph_heavy_paths_top100`, `activity_zones` |
 | **Approximate** | Space-Saving + Count-Min vs exact | scale + the approximate-algorithms requirement | ✅ | `approx_top100` + memory/accuracy metrics |
 | **Anomaly detection** | 5 detectors (speed/idle/distance/shape/drift) | the "anomalous routes" requirement | ✅ | `anomalies_top50` |

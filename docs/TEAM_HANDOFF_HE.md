@@ -11,8 +11,10 @@
 - **מה המרצה ביקש:** לנתח את דאטהסט מסלולי המוניות של פורטו בסביבת **Big Data
   מבוזרת (Spark)**, ולזהות **מסלולי-משנה פופולריים ארוכים (popular long
   sub-routes)** — top 100 עבור אורכי מינימום {1, 3, 5, 10, 20, 40} ק"מ.
-  יש לממש **שלוש שיטות שונות**: (A) clustering, (B) suffix-array / frequent
-  sub-route mining, (C) שיטה מקורית שאינה clustering ואינה suffix. בנוסף,
+  יש לממש **שלוש שיטות שונות לפחות**: (A) clustering, (B) שיטה מבוססת
+  Suffix Tree / Suffix Array, (C) שיטה מקורית שאינה clustering ואינה suffix.
+  בפרויקט מומשו **ארבע**: A clustering, B maximal-frequent (ספירת n-gram),
+  C גרף מעברים, ו-**D suffix array אמיתי** (`route_mining_suffix_array.py`). בנוסף,
   אופטימיזציה עם **מבני נתונים הסתברותיים** (Bloom / LSH / Count-Min / T-Digest /
   HyperLogLog). ההרצה הסופית צריכה לרוץ על **GCP DataProc עם 5+ מכונות**.
 - **הדאטהסט:** Porto Taxi (תחרות Kaggle ECML/PKDD 2015). קובץ `train.csv` בגודל
@@ -93,10 +95,19 @@ n-grams / maximal substrings, (C) גרף מעברים בין תאים. אלפב�
    `src/verify_route_mining.py`): ספירת כל תת-המסלולים הרציפים, `support = מספר
    נסיעות distinct` (dedup בתוך נסיעה), top-100 לכל סף. אומת ע"י ספירת containment
    עצמאית (brute-force) שהתאימה במדויק.
-9. **Suffix-style maximal-route mining (M6)** (`src/route_mining_suffix.py`,
+9. **Closed-substring mining (M6)** (`src/route_mining_suffix.py`,
    `src/verify_suffix_mining.py`): שמירת מסלולים **maximal/closed** בלבד —
-   מסלול נשמר רק אם אין הרחבה בתא בודד (שמאל/ימין) עם support זהה. זו תכונת
-   "branching node" של suffix-tree, מחושבת ב-Spark דרך parent-key `groupBy`+join.
+   מסלול נשמר רק אם אין הרחבה בתא בודד (שמאל/ימין) עם support זהה.
+   **שימו לב:** למרות שם הקובץ, המודול הזה **אינו** בונה suffix tree או suffix
+   array — הוא מחשב את אותה קבוצת תוצאות דרך `groupBy`+join על טבלת ה-n-gram של
+   M5, כלומר הוא בעצם מסנן על M5 ולא שיטה עצמאית. דרישת ה-Suffix Tree/Array של
+   המטלה ממומשת ב-`route_mining_suffix_array.py` (שיטה D, סעיף 9ב).
+9ב. **Suffix array אמיתי (Method D)** (`src/route_mining_suffix_array.py`):
+   suffix array כללי מבוזר + מערך LCP, כריית מסלולים מקסימליים מתוך LCP
+   intervals. כל suffix משויך לדלי לפי 3 התאים הראשונים שלו, ולכן כל המופעים של
+   תת-מסלול נופלים באותה מחיצה והספירה נכונה גלובלית ללא מיזוג בין מחיצות.
+   אומת מול M5: **0 אי-התאמות** ב-support. זו השיטה שנושאת את התוצר בקנה מידה
+   מלא — M5/M6/M8 ריבועיים ולא שורדים 200k נסיעות.
 10. **Approximate top-k mining (M7)** (`src/route_mining_approx.py`,
     `src/verify_approx_mining.py`): **Space-Saving** (primary, top-k finder) +
     **Count-Min** (auxiliary frequency oracle), בנייה per-partition ומיזוג

@@ -27,12 +27,13 @@ general sequential-pattern mining (e.g. PrefixSpan) because we only need
 
 Every required method is a different lens on this one problem:
 
-| Required method | Lens on the problem |
-|-----------------|---------------------|
-| A. Clustering | group *similar whole routes*, take cluster representatives |
-| B. Suffix array/tree | enumerate/count *frequent substrings* directly |
+| Method | Lens on the problem |
+|--------|---------------------|
+| A. Clustering | group *similar trips*, then take the longest cell run their members SHARE (a sub-route, not a whole trip) |
+| B. Maximal-frequent | count *frequent contiguous substrings*, keep the maximal ones clearing X% |
 | C. Original (ours: graph) | treat cells as a *weighted transition graph*, mine heavy paths |
-| D. Approximate structures | make counting/dedup/similarity **cheap at scale** |
+| D. Suffix array | build a generalised suffix array + LCP array, read maximal repeats off the LCP intervals |
+| (cross-cutting) Approximate structures | make counting/dedup/similarity **cheap at scale** (LSH, Space-Saving, Count-Min, GK quantiles) |
 
 ---
 
@@ -116,8 +117,10 @@ memory · scalability · why this over alternatives.**
 - **Why these choices:** explicit schema avoids a full extra `inferSchema` read;
   Parquet output is 5–10× smaller and keeps the *parsed* array.
 - **Validated results & the two Windows fixes** (non-ASCII path, winutils):
-  see [SETUP.md](../SETUP.md) §6/§6b. Full file = 1,710,670 trips; sample
-  5,000 → 4,867 valid (97.3%); drops = 101 too-few-points + 32 outside-bbox.
+  see [SETUP.md](../SETUP.md). Full file = **1,710,670** trips (measured);
+  sample 5,000 → **4,881** valid (97.6%); mid 200,000 → 188,761 valid. A further
+  ~2.8% are dropped before ENCODING as physically impossible (teleport /
+  >200 km/h / parked / off-map) — see Phase 4.
 
 ### Phase 2 — Feature engineering  ✅ skeleton implemented
 - **Goal:** per-trip Haversine distance, avg/max speed, bbox, sinuosity, anomaly
@@ -254,14 +257,20 @@ memory · scalability · why this over alternatives.**
   threshold) so teleport/pathological trajectories cannot blow up the O(n²)
   per-trip enumeration; irrelevant to real trips (p95 distance ≈ 13 km).
 
-- **M6 — suffix-style MAXIMAL (closed) routes implemented & validated**
+- **M6 — CLOSED (maximal) routes implemented & validated**
   (`route_mining_suffix.py`, `verify_suffix_mining.py`).
+  > **Naming correction.** This module builds no suffix structure. It computes
+  > the set a suffix tree's branching nodes would give you, but by DataFrame
+  > joins over M5's n-gram table — so it is a post-filter on M5, not an
+  > independent method, and the filename is historical. The assignment's
+  > Suffix Tree / Suffix Array requirement is met by Method **D**,
+  > `route_mining_suffix_array.py`.
   - **Problem it solves:** M5 top-lists are full of overlapping fragments of the
     same corridor (a popular route makes all its sub-windows popular too).
   - **Definition:** a sub-route `s` is *maximal/closed* iff no proper contiguous
     super-route has support within `SUPPORT_TOL` of `s` (default 0.0 = classical
     closed: drop `s` only if a longer route has EQUAL support).
-  - **Suffix-tree mechanism (why it's "suffix-style"):** support is monotonic
+  - **Why the branching-node property applies:** support is monotonic
     under extension, so the highest support any super-route can reach = the best
     SINGLE-CELL extension's support. `s` is closed ⇔ every one-cell left/right
     extension has strictly lower support — exactly the suffix-tree branching-node
