@@ -249,7 +249,11 @@ def main(scale: str, compare_grids: bool) -> None:
     paths = config.dataset_paths(scale)
 
     with cli.stage("m3_encoding", scale, log) as st:
-        cols = ["TRIP_ID", "TAXI_ID", "n_points", "duration_sec",
+        # TAXI_ID: "popular" should mean many DRIVERS, not many trips by one
+        # driver -- there are only 442 taxis over a year.
+        # TIMESTAMP: rush-hour and 3 a.m. traffic are different phenomena; a
+        # year-long average may describe no actual hour.
+        cols = ["TRIP_ID", "TAXI_ID", "TIMESTAMP", "n_points", "duration_sec",
                 "total_distance_km", "points"]
         raw_feats = spark.read.parquet(paths["features"])
         n_in = raw_feats.count()

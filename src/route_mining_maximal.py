@@ -69,63 +69,46 @@ def min_support_for(x_pct: float, n_trips: int) -> int:
     return max(2, math.ceil(x_pct / 100.0 * n_trips))
 
 
-def calibrate_x_per_threshold(agg, n_trips, thresholds, grid, top_k):
+def calibrate_per_threshold(agg, n_trips, thresholds, floors, top_k):
     """
-    For each length threshold L, pick the largest X in `grid` whose
-    maximal-frequent set contains >= top_k routes with length >= L.
+    For each length threshold L, the TIGHTEST absolute support floor that still
+    yields `top_k` routes of length >= L.
 
-    Returns (chosen, per_x) where
-        chosen[L] = (x_pct, min_sup, n_routes_at_L, DataFrame)
-        per_x[x]  = (min_sup, total_routes, longest_km)   # for the sweep report
+    Absolute, not percentage, for the same reason as Method D
+    (route_mining_suffix_array.calibrate): X=0.01% is 2 trips on the sample but
+    171 at 1.71M, so a percentage grid gets harder to clear as the data grows and
+    the long length bands empty out. Measured: switching to absolute floors turned
+    the >=20 km band from empty into a 21.36 km corridor at mid scale.
 
-    The grid is walked ONCE (descending), reusing each computed set for every
-    threshold, so the cost is len(grid) passes regardless of how many length
-    configurations we report.
+    B and D must use the SAME instrument or their outputs stop being comparable,
+    and the 0-disagreement invariant between them becomes meaningless.
+
+    Returns (chosen, per_floor) with
+      chosen[L]     = (min_sup, x_pct, DataFrame)
+      per_floor[ms] = (x_pct, n_routes, longest_km)
     """
-    # min_support_for() floors at 2 trips, so on a small dataset the tail of the
-    # grid collapses onto the same floor. Walk DISTINCT support floors only --
-    # each one costs a full shuffle, and recomputing an identical result is the
-    # kind of waste that turns into real money on a cluster.
-    steps, seen = [], set()
-    for x in grid:
-        min_sup = min_support_for(x, n_trips)
-        if min_sup not in seen:
-            seen.add(min_sup)
-            steps.append((x, min_sup))
-
-    chosen: dict = {}
-    per_x: dict = {}
-    last = None
-    for x, min_sup in steps:
-        maximal = keep_maximal_frequent(agg, min_sup).cache()
+    chosen, per_floor, loosest = {}, {}, None
+    for ms in sorted(floors, reverse=True):
+        if ms > n_trips:
+            continue
+        maximal = keep_maximal_frequent(agg, ms).cache()
         stats = maximal.agg(F.count(F.lit(1)).alias("n"),
                             F.max("length_km").alias("mx")).collect()[0]
-        per_x[x] = (min_sup, stats["n"], stats["mx"] or 0.0)
-        last = (x, min_sup, maximal)
-        log.info("  X=%-5s min_sup=%-7d maximal=%-9s longest=%.2f km",
-                 f"{x}%", min_sup, f"{stats['n']:,}", stats["mx"] or 0.0)
-
+        x_pct = config.pct_of(ms, n_trips)
+        per_floor[ms] = (x_pct, stats["n"], stats["mx"] or 0.0)
+        loosest = (ms, x_pct, maximal)
+        log.info("  min_sup=%-6d (X=%.4f%%)  maximal=%-9s longest=%.2f km",
+                 ms, x_pct, f"{stats['n']:,}", stats["mx"] or 0.0)
         for L in thresholds:
-            if L in chosen:                       # a larger X already served it
-                continue
-            n_at_l = maximal.filter(F.col("length_km") >= L).count()
-            if n_at_l >= top_k:
-                chosen[L] = (x, min_sup, n_at_l, maximal)
+            if L not in chosen and \
+                    maximal.filter(F.col("length_km") >= L).count() >= top_k:
+                chosen[L] = (ms, x_pct, maximal)
 
-    # Any threshold the grid could not fill gets the loosest floor we reached, so
-    # it reports whatever genuinely exists (possibly nothing) rather than being
-    # silently absent from the deliverable.
-    x, min_sup, maximal = last
+    if loosest is None:
+        return {}, {}
     for L in thresholds:
-        if L not in chosen:
-            chosen[L] = (x, min_sup, maximal.filter(F.col("length_km") >= L).count(),
-                         maximal)
-
-    # X values the grid skipped as duplicates still belong in the sweep report.
-    for gx in grid:
-        per_x.setdefault(gx, per_x[next(sx for sx, sm in steps
-                                        if sm == min_support_for(gx, n_trips))])
-    return chosen, per_x
+        chosen.setdefault(L, loosest)
+    return chosen, per_floor
 
 
 def main(scale: str) -> None:
@@ -140,10 +123,10 @@ def main(scale: str) -> None:
         log.info("=" * 62)
         log.info("trips          : %s", f"{n_trips:,}")
         log.info("all sub-routes : %s", f"{n_all:,}")
-        log.info("calibrating X per length threshold over grid %s",
-                 config.SUPPORT_X_PCT_GRID)
-        chosen, per_x = calibrate_x_per_threshold(
-            agg, n_trips, THRESHOLDS, config.SUPPORT_X_PCT_GRID, TOP_K)
+        log.info("calibrating the support floor per length threshold over %s",
+                 config.SUPPORT_MIN_SUP_GRID)
+        chosen, per_floor = calibrate_per_threshold(
+            agg, n_trips, THRESHOLDS, config.SUPPORT_MIN_SUP_GRID, TOP_K)
         log.info("=" * 62)
 
         rep = [f"# M8 Min-Support Maximal Sub-routes ({scale})",
@@ -151,31 +134,35 @@ def main(scale: str) -> None:
                f"\ntrips: {n_trips:,} | all sub-routes: {n_all:,}\n",
                "## Top maximal-frequent routes per length configuration",
                "",
-               "`X%` is calibrated per configuration: the largest support floor that",
-               f"still yields {TOP_K} routes at that minimum length. A single global X",
-               "would leave the long configurations empty.",
+               "The support floor is calibrated per configuration: the TIGHTEST",
+               f"floor that still yields {TOP_K} routes at that minimum length. It is",
+               "absolute (a trip count) rather than a percentage, because a",
+               "percentage floor gets harder to clear as the dataset grows and",
+               "empties the long bands. The equivalent X% at this scale is shown.",
                "",
-               "| min_len_km | X% used | min_sup (trips) | #maximal(>=L) | top_support | longest_km |",
+               "| min_len_km | min_sup | = X% | #maximal(>=L) | top_support | longest_km |",
                "|---|---|---|---|---|---|"]
 
         all_rows, empty = [], []
         for L in THRESHOLDS:
-            x, min_sup, n_at_l, maximal = chosen[L]
+            min_sup, x, maximal = chosen[L]
             cand = maximal.filter(F.col("length_km") >= L)
+            n_at_l = cand.count()
             top = (cand.orderBy(F.col("support").desc(), F.col("length_km").desc())
                    .limit(TOP_K).collect())
             top_support = top[0]["support"] if top else 0
             longest = max((r["length_km"] for r in top), default=0.0)
-            rep.append(f"| {L} | {x} | {min_sup:,} | {n_at_l:,} | {top_support:,} "
-                       f"| {longest:.2f} |")
+            rep.append(f"| {L} | {min_sup:,} | {x:.4f}% | {n_at_l:,} "
+                       f"| {top_support:,} | {longest:.2f} |")
             if not top:
                 empty.append(L)
             for rank, r in enumerate(top, 1):
-                all_rows.append((L, x, rank, r["support"], round(r["length_km"], 3),
-                                 r["n_cells"], r["subroute"]))
+                all_rows.append((L, min_sup, round(x, 5), rank, r["support"],
+                                 round(r["length_km"], 3), r["n_cells"],
+                                 r["subroute"]))
 
         if empty:
-            longest_any = max((v[2] for v in per_x.values()), default=0.0)
+            longest_any = max((v[2] for v in per_floor.values()), default=0.0)
             rep += ["",
                     f"> **Empty configurations: {', '.join(f'>={L} km' for L in empty)}.** "
                     f"Even at the loosest floor (2 trips) the longest contiguous "
@@ -188,15 +175,17 @@ def main(scale: str) -> None:
 
         csv_path = storage.write_csv(
             storage.out_path("routes", f"maximal_frequent_top100_{scale}.csv"),
-            ["min_len_km", "x_pct", "rank", "support", "length_km", "n_cells", "subroute"],
+            ["min_len_km", "min_sup", "x_pct", "rank", "support", "length_km",
+             "n_cells", "subroute"],
             all_rows)
 
         # ---- X sweep (what the whole grid looked like) ----
-        rep += ["", "## X% sweep (the calibration search space)",
-                "| X% | min_sup | #maximal-frequent | longest_km |", "|---|---|---|---|"]
-        for x in config.SUPPORT_X_PCT_GRID:
-            min_sup, n_routes, longest = per_x[x]
-            rep.append(f"| {x} | {min_sup:,} | {n_routes:,} | {longest:.2f} |")
+        rep += ["", "## Support-floor sweep (length vs strictness)",
+                "| min_sup | = X% | #maximal-frequent | longest_km |",
+                "|---|---|---|---|"]
+        for ms in sorted(per_floor, reverse=True):
+            x_pct, n_routes, longest = per_floor[ms]
+            rep.append(f"| {ms:,} | {x_pct:.4f}% | {n_routes:,} | {longest:.2f} |")
 
         # ---- HOLES analysis at the reference X ----
         rep += _holes_section(agg, n_trips)
@@ -208,7 +197,7 @@ def main(scale: str) -> None:
         log.info("wrote maximal-frequent routes -> %s", csv_path)
         log.info("wrote report                  -> %s", rp)
         st.update(trips=n_trips, distinct_keys=n_all,
-                  x_per_threshold={str(L): chosen[L][0] for L in THRESHOLDS},
+                  floor_per_threshold={str(L): chosen[L][0] for L in THRESHOLDS},
                   mining_s=round(time.time() - t0, 1))
 
     spark.stop()

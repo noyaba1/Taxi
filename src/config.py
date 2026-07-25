@@ -90,8 +90,11 @@ SOLUTION_DESTINATION = _first_existing(
 # "sample" = a few thousand trips (seconds, for correctness);
 # "mid"    = a few hundred thousand (minutes, exercises a real shuffle/skew);
 # "full"   = all 1.71M (DataProc).
-SCALES = ("sample", "mid", "full")
-DEFAULT_SAMPLE_N = {"sample": 5_000, "mid": 200_000}
+# Extra scales exist so full-scale behaviour can be EXTRAPOLATED from a measured
+# curve rather than guessed. Two points is a line; four is a trend.
+SCALES = ("sample", "mid", "s400k", "s800k", "full")
+DEFAULT_SAMPLE_N = {"sample": 5_000, "mid": 200_000,
+                    "s400k": 400_000, "s800k": 800_000}
 
 _PROCESSED = storage_join(DATA_BASE, "processed")
 _SAMPLE_DIR = storage_join(DATA_BASE, "sample")
@@ -222,6 +225,37 @@ SUPPORT_X_PCT = 0.5                       # reference X for the headline report
 # back empty. The PDF asks us to maximise length subject to >= X%, which only
 # has an answer if X is allowed to move with L.
 SUPPORT_X_PCT_GRID = [5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01]
+
+# ...but calibration walks ABSOLUTE floors, not percentages, and here is why.
+#
+# A percentage floor is scale-dependent in the wrong direction. 0.01% is 2 trips
+# on the 5k sample but 171 trips at 1.71M -- so the more data you have, the
+# HARDER it becomes to clear the bottom of the grid, and the long length bands
+# get emptier as the dataset grows. Measured: the sample reached min_sup=2 and
+# found an 11.99 km corridor; the mid scale bottomed out at min_sup=19 and found
+# 11.06 km. That is backwards.
+#
+# The brief asks us to tune X "when you are interested in maximising the
+# sub-route length", so the honest instrument is an absolute floor, reported
+# alongside the X% it happens to correspond to at that scale.
+SUPPORT_MIN_SUP_GRID = [2, 3, 5, 10, 20, 50, 100, 250, 500, 1000, 2500, 5000]
+
+
+def pct_of(min_sup: int, n_trips: int) -> float:
+    """The X% an absolute support floor corresponds to at this scale."""
+    return 100.0 * min_sup / n_trips if n_trips else float("nan")
+
+
+# --- temporal analysis: is "popular" the same at 08:00 and 03:00? ---
+# Hour-of-day buckets (local Porto time == UTC+0/+1; the dataset's TIMESTAMP is
+# unix seconds). Boundaries are the conventional commute peaks, not tuned.
+TIME_BUCKETS = [
+    ("night", 0, 6),          # 00:00-05:59
+    ("morning_peak", 6, 10),  # 06:00-09:59
+    ("midday", 10, 16),       # 10:00-15:59
+    ("evening_peak", 16, 20), # 16:00-19:59
+    ("evening", 20, 24),      # 20:00-23:59
+]
 
 # --- Method A clustering: MinHash-LSH on directed bigram shingles ---
 LSH_NUM_FEATURES = 1 << 18   # HashingTF dimensionality for shingles

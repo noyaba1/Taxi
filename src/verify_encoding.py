@@ -47,14 +47,33 @@ def main(scale: str) -> None:
     enc = spark.read.parquet(enc_path)
     enc.cache()
     n_enc = enc.count()
-    n_feat = spark.read.parquet(feat_path).count()
+    feats = spark.read.parquet(feat_path)
+    n_feat = feats.count()
+    n_anom = feats.filter(F.col("is_anomalous")).count()
 
     ok = True
 
-    # 1. row count preserved
-    c1 = (n_enc == n_feat)
+    # 1. row count matches EXACTLY the intended drop.
+    #    Encoding no longer preserves the row count: it deliberately excludes
+    #    physically impossible trajectories, because a GPS teleport that reaches
+    #    the miners reports the size of the jump as route length. So the
+    #    invariant is not "nothing was dropped" -- it is "exactly the anomalous
+    #    trips were dropped, and nothing else".
+    expected = n_feat - n_anom if config.EXCLUDE_ANOMALOUS else n_feat
+    c1 = (n_enc == expected)
     ok &= c1
-    print(f"[{'OK' if c1 else 'FAIL'}] row count preserved: encoded={n_enc:,} features={n_feat:,}")
+    print(f"[{'OK' if c1 else 'FAIL'}] row count = features - anomalous: "
+          f"encoded={n_enc:,} expected={expected:,} "
+          f"(features={n_feat:,} - anomalous={n_anom:,}, "
+          f"EXCLUDE_ANOMALOUS={config.EXCLUDE_ANOMALOUS})")
+
+    # 1b. and the encoded set really contains no anomalous trip.
+    anom_ids = feats.filter(F.col("is_anomalous")).select("TRIP_ID")
+    leaked = enc.join(anom_ids, "TRIP_ID", "inner").count() if config.EXCLUDE_ANOMALOUS else 0
+    c1b = (leaked == 0)
+    ok &= c1b
+    print(f"[{'OK' if c1b else 'FAIL'}] no anomalous trip reached the encoded "
+          f"table: {leaked} leaked (must be 0)")
 
     # 2. no empty compact sequences (every valid trip must yield >=1 cell)
     empty = enc.filter((F.col("n_cells_compact") < 1) | F.col("h3_seq_compact").isNull()).count()
@@ -90,6 +109,9 @@ def main(scale: str) -> None:
 
     print("\n" + ("ENCODING VERIFICATION PASSED." if ok else "ENCODING VERIFICATION FAILED."))
     spark.stop()
+    # A verifier that cannot fail is not a verifier: exit non-zero so
+    # run_pipeline --verify actually gates on the result.
+    raise SystemExit(0 if ok else 1)
 
 
 if __name__ == "__main__":

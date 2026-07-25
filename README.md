@@ -40,7 +40,7 @@ See [SETUP.md](SETUP.md) for the full environment (Java 17, Python 3.11).
 .venv/bin/python -m src.validate_env                    # env gate
 .venv/bin/python -m src.make_sample --sample            # 5,000 trips
 .venv/bin/python -m src.run_pipeline --sample --verify  # 14 stages + 9 verifiers
-.venv/bin/python -m pytest tests/ -q                    # 49 unit tests
+.venv/bin/python -m pytest tests/ -q                    # 56 unit tests
 ```
 
 Open `outputs/maps/porto_map_sample.html`.
@@ -70,7 +70,7 @@ a sub-route is a contiguous substring, "popular" = distinct-trip support, "long"
 | **A** | `route_mining_clustering.py` | MinHash-LSH over directed bigram shingles → greedy star clustering → the longest cell run ≥60% of members share | distinct-trip support |
 | **B** | `route_mining_maximal.py` | contiguous n-gram support table → maximal among routes clearing X%, **X calibrated per length config** | distinct-trip support |
 | **C** | `route_mining_graph.py` | directed cell-transition graph → PageRank activity zones + dominant-flow heavy paths, validated against real trips | distinct-trip support |
-| **D** | `route_mining_suffix_array.py` | generalised **suffix array + LCP intervals** — exact, without enumerating windows | distinct-trip support |
+| **D** | `route_mining_suffix_array.py` | generalised **suffix array + LCP intervals** — exact, without enumerating windows | trips **and distinct taxis** |
 
 All four report the same unit, so the cross-method comparison compares like with
 like. Supporting stages: `route_mining_exact.py` (exhaustive baseline, ground
@@ -80,7 +80,19 @@ truth at small scale), `route_mining_closed.py` (closed sub-routes),
 ### Approximate structures
 
 MinHash-LSH (Method A), Space-Saving frequent-items and Count-Min (M7),
-Greenwald-Khanna quantiles (anomaly fences) — each compared against exact.
+Greenwald-Khanna quantiles (anomaly fences), and **HyperLogLog** for distinct
+taxis per cell in the activity zones — each compared against exact.
+
+No Bloom filter: there is no place in this pipeline where it earns its keep
+(containment is already one Aho-Corasick pass), and adding a structure in order
+to name it is the opposite of what the brief rewards.
+
+### What "popular" means here
+
+Support counts distinct **trips** *and* distinct **taxis**. With only 442
+vehicles over a year, a corridor driven 200 times by one driver is a habit, not
+a route — and the ≥10 km band turns out to be dominated by single-vehicle
+repeats. See the taxi-diversity section of the method comparison.
 
 ---
 
@@ -116,7 +128,7 @@ method**:
 - graph routes validated against real trips (anti-"Frankenstein");
 - anomaly self-consistency.
 
-Plus 49 unit tests, including brute-force cross-checks of the LCP-interval
+Plus 56 unit tests, including brute-force cross-checks of the LCP-interval
 enumeration and the Aho-Corasick automaton, and a regression test for the storage
 layer that decides whether cloud results survive teardown.
 

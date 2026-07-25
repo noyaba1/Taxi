@@ -175,25 +175,61 @@ def main(scale: str) -> None:
 
     with cli.stage("m10_graph", scale, log) as st:
         t0 = time.time()
-        trips = spark.read.parquet(paths_cfg["encoded"]).select("h3_seq_compact").cache()
+        trips = (spark.read.parquet(paths_cfg["encoded"])
+                 .select("TAXI_ID", "h3_seq_compact").cache())
         n_trips = trips.count()
 
         edges = build_edges(trips).cache()
         n_edges = edges.count()
+
+        # ---- DISTINCT TAXIS PER CELL: where HyperLogLog actually earns its place ----
+        # A cell busy with 5,000 trips from 3 vehicles is a depot or a rank, not
+        # a public hotspot. Distinct-TAXI count separates the two -- and it is a
+        # genuine large-cardinality problem: ~85M (cell, taxi) pairs at full
+        # scale. That is what HLL is for, so we use it here and NOT on the
+        # corridors (whose buckets are small enough to count exactly for free).
+        #
+        # Both are computed so the approximation can be reported honestly.
+        cell_taxi = (trips.select(F.explode("h3_seq_compact").alias("id"), "TAXI_ID")
+                     .cache())
+        t_hll = time.time()
+        hll = (cell_taxi.groupBy("id")
+               .agg(F.approx_count_distinct("TAXI_ID").alias("taxis_hll")))
+        hll.count()
+        t_hll = time.time() - t_hll
+        t_exact = time.time()
+        exact = (cell_taxi.groupBy("id")
+                 .agg(F.countDistinct("TAXI_ID").alias("taxis_exact")))
+        exact.count()
+        t_exact = time.time() - t_exact
+        taxi_counts = hll.join(exact, "id")
+        err = taxi_counts.select(
+            F.avg(F.abs(F.col("taxis_hll") - F.col("taxis_exact"))
+                  / F.col("taxis_exact")).alias("mre"),
+            F.max(F.abs(F.col("taxis_hll") - F.col("taxis_exact"))).alias("max_abs"),
+            F.count(F.lit(1)).alias("cells")).collect()[0]
+        log.info("distinct taxis/cell: HLL %.1fs vs exact %.1fs over %s cells "
+                 "| mean rel err %.3f%%, worst abs %d",
+                 t_hll, t_exact, f"{err['cells']:,}", 100 * (err["mre"] or 0),
+                 err["max_abs"] or 0)
 
         # ---- ACTIVITY ZONES: PageRank + weighted throughput ----
         pr, n_nodes = pagerank(edges, config.PAGERANK_ITERS, config.PAGERANK_DAMPING)
         throughput = edges.groupBy(F.col("t").alias("id")).agg(F.sum("w").alias("in_w"))
         zones = (pr.join(throughput, "id", "left")
                  .withColumn("in_w", F.coalesce("in_w", F.lit(0)))
+                 .join(taxi_counts, "id", "left")
                  .orderBy(F.col("pr").desc())
                  .limit(config.ACTIVITY_ZONES_TOP).collect())
 
         zpath = storage.write_csv(
             storage.out_path("routes", f"activity_zones_{scale}.csv"),
-            ["rank", "cell", "lat", "lon", "pagerank", "in_traffic"],
+            ["rank", "cell", "lat", "lon", "pagerank", "in_traffic",
+             "distinct_taxis", "distinct_taxis_hll", "trips_per_taxi"],
             [(rank, z["id"], *[round(v, 6) for v in h3.h3_to_geo(z["id"])],
-              round(z["pr"], 10), z["in_w"])
+              round(z["pr"], 10), z["in_w"],
+              z["taxis_exact"] or 0, z["taxis_hll"] or 0,
+              round((z["in_w"] or 0) / max(z["taxis_exact"] or 1, 1), 1))
              for rank, z in enumerate(zones, 1)])
 
         # ---- POPULAR ROUTES: greedy heavy paths, then validate against trips ----
@@ -206,7 +242,9 @@ def main(scale: str) -> None:
         # pass per (trip, candidate) pair.
         support = {}
         if cand:
-            token_rdd = trips.rdd.map(lambda r: list(r[0]))
+            # By NAME, not position: this frame gained a TAXI_ID column and a
+            # positional r[0] silently became the taxi id instead of the cells.
+            token_rdd = trips.rdd.map(lambda r: list(r["h3_seq_compact"]))
             support = dict(
                 ahocorasick.containment_support(token_rdd, [tuple(c) for c in cand])
                 .collect())
@@ -246,10 +284,46 @@ def main(scale: str) -> None:
             all_rows)
 
         rep += ["", "## Top activity zones (PageRank, dangling mass redistributed)",
-                "| rank | cell | lat | lon | pagerank |", "|---|---|---|---|---|"]
+                "",
+                "`taxis` is the number of DISTINCT VEHICLES seen in the cell. "
+                "`trips/taxi` separates a public hotspot from a depot: a cell with "
+                "heavy traffic from few vehicles is a rank or a garage, not a place "
+                "the city is busy.",
+                "",
+                "| rank | cell | lat | lon | pagerank | in_traffic | taxis | trips/taxi |",
+                "|---|---|---|---|---|---|---|---|"]
         for rank, z in enumerate(zones[:10], 1):
             lat, lon = h3.h3_to_geo(z["id"])
-            rep.append(f"| {rank} | {z['id']} | {lat:.5f} | {lon:.5f} | {z['pr']:.6f} |")
+            tx = z["taxis_exact"] or 0
+            rep.append(f"| {rank} | {z['id']} | {lat:.5f} | {lon:.5f} "
+                       f"| {z['pr']:.6f} | {z['in_w']:,} | {tx:,} "
+                       f"| {(z['in_w'] or 0) / max(tx, 1):.1f} |")
+
+        rep += ["", "## HyperLogLog vs exact: distinct taxis per cell",
+                "",
+                "The one place in this pipeline where a cardinality sketch is "
+                "genuinely warranted -- ~85M (cell, taxi) pairs at full scale. "
+                "(Corridor supports are counted EXACTLY instead: their suffix-array "
+                "buckets are small, so a sketch would trade accuracy for nothing.)",
+                "",
+                "| metric | value |", "|---|---|",
+                f"| cells measured | {err['cells']:,} |",
+                f"| HLL time | {t_hll:.1f}s |",
+                f"| exact `countDistinct` time | {t_exact:.1f}s |",
+                f"| HLL time / exact time | {t_hll / max(t_exact, 0.01):.2f}x |",
+                f"| mean relative error | {100 * (err['mre'] or 0):.3f}% |",
+                f"| worst absolute error | {err['max_abs'] or 0} taxis |",
+                "",
+                "**Read the time row honestly: at small scale HLL is SLOWER.** "
+                "With a few thousand cells and a few hundred taxis each, an exact "
+                "set fits in memory trivially and the sketch's fixed per-group "
+                "register array is pure overhead. HLL's argument is not speed at "
+                "this size -- it is that its memory is O(1) per group against "
+                "exact's O(distinct taxis per group), so it is the version that "
+                "still runs when cardinality grows. Compare this table across "
+                "scales (sample / mid / s400k) to see where the crossover is; "
+                "reporting a sketch as a win where it is not would be exactly the "
+                "kind of unearned claim this project has been trying to remove."]
 
         rp = storage.write_lines(
             storage.out_path("statistics", f"m10_graph_{scale}.md"), rep)

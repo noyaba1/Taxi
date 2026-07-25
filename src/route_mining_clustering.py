@@ -254,7 +254,8 @@ def discover(spark, scale: str):
     patterns = [tuple(r["subroute"].split(DELIM)) for r in runs]
     support = {}
     if patterns:
-        token_rdd = trips.select("h3_seq_compact").rdd.map(lambda r: list(r[0]))
+        token_rdd = (trips.select("h3_seq_compact").rdd
+                     .map(lambda r: list(r["h3_seq_compact"])))
         support = dict(ahocorasick.containment_support(token_rdd, patterns).collect())
 
     routes = [(support.get(i, 0), r["cluster_size"], r["members_with_run"],

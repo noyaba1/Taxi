@@ -149,6 +149,7 @@ submit route_mining_graph.py
 submit anomaly_analysis.py
 submit evaluation.py
 submit validate_holdout.py    # generalisation check on unseen trips
+submit temporal_analysis.py   # do popular corridors depend on the hour?
 submit visualization.py
 
 # Approximate structures LAST. --approx-only skips the exact groupBy, but the

@@ -117,6 +117,9 @@ def main(scale: str) -> None:
 
     print("\n" + ("APPROX VERIFICATION PASSED." if ok else "APPROX VERIFICATION FAILED."))
     spark.stop()
+    # A verifier that cannot fail is not a verifier: exit non-zero so
+    # run_pipeline --verify actually gates on the result.
+    raise SystemExit(0 if ok else 1)
 
 
 if __name__ == "__main__":

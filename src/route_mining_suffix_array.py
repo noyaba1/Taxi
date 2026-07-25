@@ -78,6 +78,7 @@ _ROUTE_SCHEMA = T.StructType([
     T.StructField("length_km", T.DoubleType()),
     T.StructField("best_right", T.IntegerType()),
     T.StructField("best_left", T.IntegerType()),
+    T.StructField("support_taxis", T.IntegerType()),
 ])
 
 
@@ -124,8 +125,23 @@ def mine_bucket(rows, min_sup, min_len_km, max_len_km):
     and emit each frequent sub-route WITH the support of its best one-cell
     extension in each direction.
 
-    `rows` is a list of (trip_id, prev_cell, suffix_cells).
-    Returns (subroute, support, n_cells, length_km, best_right, best_left).
+    `rows` is a list of (trip_id, taxi_id, prev_cell, suffix_cells).
+    Returns (subroute, support, n_cells, length_km, best_right, best_left,
+             support_taxis).
+
+    SUPPORT IS COUNTED TWICE, ON PURPOSE
+    ------------------------------------
+    `support` counts distinct TRIPS; `support_taxis` counts distinct TAXIS. With
+    only 442 vehicles over a year, a corridor driven 200 times by one driver
+    going to their own stand is not "popular" in the sense the brief means -- it
+    is one person's habit. Trip-support alone cannot tell the two apart, so we
+    carry both and let the report show where they disagree.
+
+    Counted EXACTLY here rather than with HyperLogLog: a bucket holds only the
+    suffixes sharing a 3-cell prefix, so the taxi id set is small and a sketch
+    would trade accuracy for nothing. HLL earns its place on the activity zones
+    (route_mining_graph), where distinct taxis per cell is a genuine
+    large-cardinality problem.
 
     WHY THE EXTENSION SUPPORTS MATTER
     ---------------------------------
@@ -146,11 +162,12 @@ def mine_bucket(rows, min_sup, min_len_km, max_len_km):
         # cannot contain anything frequent. Cheapest possible prune.
         return []
 
-    rows = sorted(rows, key=lambda r: r[2])      # <- the suffix array
+    rows = sorted(rows, key=lambda r: r[3])      # <- the suffix array
     n = len(rows)
     trips = [r[0] for r in rows]
-    prevs = [r[1] for r in rows]
-    sufs = [r[2] for r in rows]
+    taxis = [r[1] for r in rows]
+    prevs = [r[2] for r in rows]
+    sufs = [r[3] for r in rows]
 
     cap = max(len(s) for s in sufs)
     lcp = [0] * n
@@ -203,7 +220,8 @@ def mine_bucket(rows, min_sup, min_len_km, max_len_km):
 
         emitted.add(key)
         out.append((key, int(support), int(h), float(length),
-                    int(best_right), int(best_left)))
+                    int(best_right), int(best_left),
+                    len({taxis[i] for i in range(l, r + 1)})))
     return out
 
 
@@ -231,12 +249,26 @@ def _suffixes(cells):
 def mine(spark, scale, min_sup):
     """Suffixes -> bucket -> per-bucket suffix array -> frequent maximal routes."""
     paths = config.dataset_paths(scale)
-    enc = spark.read.parquet(paths["encoded"]).select("TRIP_ID", "h3_seq_compact")
+    enc = spark.read.parquet(paths["encoded"]).select(
+        "TRIP_ID", "TAXI_ID", "h3_seq_compact")
+    return mine_encoded(enc, min_sup)
+
+
+def mine_encoded(enc, min_sup):
+    """
+    The miner, over an already-loaded encoded frame.
+
+    Split out from `mine` so callers that need a SUBSET -- the temporal analysis
+    mines each hour bucket separately -- drive the real miner instead of
+    reimplementing it. `enc` must carry TRIP_ID, TAXI_ID, h3_seq_compact.
+    """
     n_trips = enc.count()
 
     suffixes = (enc
-                .select("TRIP_ID", F.explode(_suffixes("h3_seq_compact")).alias("s"))
-                .select("TRIP_ID", "s.bucket", "s.prev_cell", "s.suffix"))
+                .select("TRIP_ID", "TAXI_ID",
+                        F.explode(_suffixes("h3_seq_compact")).alias("s"))
+                .select("TRIP_ID", "TAXI_ID", "s.bucket", "s.prev_cell",
+                        "s.suffix"))
     n_suffixes = suffixes.count()
 
     max_len = config.MAX_SUBROUTE_KM
@@ -245,12 +277,12 @@ def mine(spark, scale, min_sup):
         """One bucket, complete, in one frame -- that is what makes it exact."""
         import pandas as pd
 
-        rows = list(zip(pdf["TRIP_ID"], pdf["prev_cell"],
+        rows = list(zip(pdf["TRIP_ID"], pdf["TAXI_ID"], pdf["prev_cell"],
                         [list(s) for s in pdf["suffix"]]))
         return pd.DataFrame(
             mine_bucket(rows, min_sup, MIN_L, max_len),
             columns=["subroute", "support", "n_cells", "length_km",
-                     "best_right", "best_left"])
+                     "best_right", "best_left", "support_taxis"])
 
     # groupBy(...).applyInPandas guarantees ONE frame per bucket. (mapInPandas
     # would hand us arbitrary Arrow batches, which can split a bucket across two
@@ -274,45 +306,51 @@ def maximal_at(routes, min_sup):
         & (F.greatest(F.col("best_right"), F.col("best_left")) < min_sup))
 
 
-def calibrate(routes, n_trips, thresholds, grid, top_k):
+def calibrate(routes, n_trips, thresholds, floors, top_k):
     """
-    For each length threshold L, the largest X whose maximal-frequent set still
-    yields `top_k` routes of length >= L.
+    For each length threshold L, the TIGHTEST support floor that still yields
+    `top_k` routes of length >= L -- i.e. the most demanding definition of
+    "popular" under which that length band is still populated.
 
-    A single global X cannot serve every configuration: maximal-frequent routes
-    are ALREADY the longest stretches clearing X, so filtering them at 40 km does
-    not find 40 km routes -- it asks whether the one chosen X happened to produce
-    any. At X=0.5% on 1.71M trips a 40 km corridor would need ~8,500 distinct
-    trips over one unbroken stretch, so that configuration comes back empty and
-    the deliverable is simply missing.
+    WHY ABSOLUTE FLOORS AND NOT PERCENTAGES
+    ---------------------------------------
+    A percentage floor is scale-dependent in the wrong direction. X=0.01% is 2
+    trips on the 5k sample but 171 trips at 1.71M, so the bottom of a percentage
+    grid gets HARDER to clear as the dataset grows and the long length bands get
+    emptier the more data you have. Measured: the sample reached min_sup=2 and a
+    11.99 km corridor; mid bottomed out at min_sup=19 and 11.06 km. Backwards.
+
+    The brief asks us to experiment with X "when you are interested in maximising
+    the sub-route length", so the instrument is an absolute floor, always
+    reported together with the X% it corresponds to at this scale.
+
+    Returns (chosen, per_floor):
+      chosen[L]      = (min_sup, x_pct, DataFrame)
+      per_floor[ms]  = (x_pct, n_routes, longest_km)
     """
-    steps, seen = [], set()
-    for x in grid:
-        ms = min_support_for(x, n_trips)
-        if ms not in seen:
-            seen.add(ms)
-            steps.append((x, ms))
-
-    chosen, per_x, last = {}, {}, None
-    for x, ms in steps:
+    chosen, per_floor, loosest = {}, {}, None
+    # Tightest first: the first floor that fills a band is the strongest claim
+    # we can make about it.
+    for ms in sorted(floors, reverse=True):
+        if ms > n_trips:
+            continue
         m = maximal_at(routes, ms).cache()
         stats = m.agg(F.count(F.lit(1)).alias("n"),
                       F.max("length_km").alias("mx")).collect()[0]
-        per_x[x] = (ms, stats["n"], stats["mx"] or 0.0)
-        last = (x, ms, m)
-        log.info("  X=%-6s min_sup=%-8d maximal=%-9s longest=%.2f km",
-                 f"{x}%", ms, f"{stats['n']:,}", stats["mx"] or 0.0)
+        x_pct = config.pct_of(ms, n_trips)
+        per_floor[ms] = (x_pct, stats["n"], stats["mx"] or 0.0)
+        loosest = (ms, x_pct, m)
+        log.info("  min_sup=%-6d (X=%.4f%%)  maximal=%-9s longest=%.2f km",
+                 ms, x_pct, f"{stats['n']:,}", stats["mx"] or 0.0)
         for L in thresholds:
             if L not in chosen and m.filter(F.col("length_km") >= L).count() >= top_k:
-                chosen[L] = (x, ms, m)
+                chosen[L] = (ms, x_pct, m)
 
-    x, ms, m = last
+    if loosest is None:                       # dataset smaller than every floor
+        return {}, {}
     for L in thresholds:
-        chosen.setdefault(L, (x, ms, m))       # loosest floor; may be empty
-    for gx in grid:
-        per_x.setdefault(gx, per_x[next(sx for sx, sm in steps
-                                        if sm == min_support_for(gx, n_trips))])
-    return chosen, per_x
+        chosen.setdefault(L, loosest)         # loosest floor reached; may be empty
+    return chosen, per_floor
 
 
 def _holes_section(routes, n_trips, x_pct):
@@ -348,11 +386,12 @@ def main(scale: str, x_pct: float, calibrate_x: bool) -> None:
         paths = config.dataset_paths(scale)
         n_probe = spark.read.parquet(paths["encoded"]).count()
 
-        # Mine ONCE at the loosest floor we will ever ask about, so the whole X
+        floors = (config.SUPPORT_MIN_SUP_GRID if calibrate_x
+                  else [min_support_for(x_pct, n_probe)])
+        # Mine ONCE at the loosest floor we will ever ask about, so the whole
         # grid is answerable by filtering. The floor also prunes the interval
-        # walk, and it scales with the data -- exactly the right behaviour.
-        grid = config.SUPPORT_X_PCT_GRID if calibrate_x else [x_pct]
-        floor_sup = min(min_support_for(x, n_probe) for x in grid)
+        # walk, so the cost scales with how strict a definition we need.
+        floor_sup = min(f for f in floors if f <= n_probe) if floors else 2
 
         n_trips, n_suffixes, routes = mine(spark, scale, floor_sup)
         routes = routes.cache()
@@ -362,11 +401,12 @@ def main(scale: str, x_pct: float, calibrate_x: bool) -> None:
         log.info("trips                    : %s", f"{n_trips:,}")
         log.info("suffixes indexed         : %s   (vs O(n^2) windows in M5)",
                  f"{n_suffixes:,}")
-        log.info("mining floor             : %d trips", floor_sup)
+        log.info("mining floor             : %d trips (X=%.4f%%)",
+                 floor_sup, config.pct_of(floor_sup, n_trips))
         log.info("frequent branching routes: %s", f"{n_routes:,}")
         log.info("=" * 62)
 
-        chosen, per_x = calibrate(routes, n_trips, THRESHOLDS, grid, TOP_K)
+        chosen, per_floor = calibrate(routes, n_trips, THRESHOLDS, floors, TOP_K)
 
         rep = [f"# Method D: Suffix Array Sub-route Mining ({scale})",
                f"_generated: {datetime.now(timezone.utc).isoformat(timespec='seconds')}_",
@@ -374,59 +414,71 @@ def main(scale: str, x_pct: float, calibrate_x: bool) -> None:
                f"trips: {n_trips:,} | suffixes indexed: {n_suffixes:,} | "
                f"mining floor: {floor_sup} trips | candidate routes: {n_routes:,}",
                "",
-               f"Suffixes are bucketed by their first {config.SA_PREFIX_CELLS} cells, "
-               "so all occurrences of any sub-route land in one partition and "
-               "per-partition counting is globally exact -- no cross-partition "
+               f"Suffixes are bucketed by their first {config.SA_PREFIX_CELLS} "
+               "cells, so all occurrences of any sub-route land in one partition "
+               "and per-partition counting is globally exact -- no cross-partition "
                "merge, no window explosion.",
                "",
                "## Top maximal-frequent routes per length configuration",
                "",
-               "`X%` is calibrated per configuration: the largest support floor "
-               f"that still yields {TOP_K} routes at that minimum length.",
+               "The support floor is calibrated **per configuration**: the "
+               "TIGHTEST floor that still fills the band, i.e. the strongest claim "
+               "the data supports at that length. It is absolute (a trip count) "
+               "because a percentage floor gets harder to clear as the dataset "
+               "grows -- see config.SUPPORT_MIN_SUP_GRID. The X% it corresponds to "
+               "at this scale is reported alongside.",
                "",
-               "| min_len_km | X% used | min_sup | #maximal(>=L) | top_support | longest_km |",
-               "|---|---|---|---|---|---|"]
+               "`support` counts distinct TRIPS; `taxis` counts distinct VEHICLES. "
+               "A corridor with high support but very few taxis is one driver's "
+               "habit, not a popular route.",
+               "",
+               "| min_len_km | min_sup | = X% | #maximal(>=L) | top_support | taxis | longest_km |",
+               "|---|---|---|---|---|---|---|"]
 
         all_rows, empty = [], []
         for L in THRESHOLDS:
-            x, ms, m = chosen[L]
+            ms, xp, m = chosen[L]
             cand = m.filter(F.col("length_km") >= L)
             n_at_l = cand.count()
             top = (cand.orderBy(F.col("support").desc(), F.col("length_km").desc())
                    .limit(TOP_K).collect())
             top_sup = top[0]["support"] if top else 0
+            top_taxis = top[0]["support_taxis"] if top else 0
             longest = max((r["length_km"] for r in top), default=0.0)
-            rep.append(f"| {L} | {x} | {ms:,} | {n_at_l:,} | {top_sup:,} "
-                       f"| {longest:.2f} |")
+            rep.append(f"| {L} | {ms:,} | {xp:.4f}% | {n_at_l:,} | {top_sup:,} "
+                       f"| {top_taxis:,} | {longest:.2f} |")
             if not top:
                 empty.append(L)
             for rank, r in enumerate(top, 1):
-                all_rows.append((L, x, rank, r["support"], round(r["length_km"], 3),
+                all_rows.append((L, ms, round(xp, 5), rank, r["support"],
+                                 r["support_taxis"], round(r["length_km"], 3),
                                  r["n_cells"], r["subroute"]))
 
         if empty:
-            longest_any = max((v[2] for v in per_x.values()), default=0.0)
+            longest_any = max((v[2] for v in per_floor.values()), default=0.0)
             rep += ["",
                     f"> **Empty configurations: "
                     f"{', '.join(f'>={L} km' for L in empty)}.** Even at the "
-                    f"loosest floor the longest contiguous stretch shared by more "
-                    f"than one trip is {longest_any:.1f} km. With {n_trips:,} trips "
-                    f"no {min(empty)} km corridor is driven twice, so there is "
-                    f"nothing popular to report at that length -- a property of "
-                    f"the data volume, not a filter."]
+                    f"loosest floor tried ({min(per_floor) if per_floor else '?'} "
+                    f"trips) the longest contiguous stretch shared by that many "
+                    f"trips is {longest_any:.1f} km. With {n_trips:,} trips no "
+                    f"{min(empty)} km corridor is repeated, so there is nothing "
+                    f"popular to report at that length -- a property of the data "
+                    f"volume, not of the filter."]
 
-        rep += ["", "## X% sweep (the calibration search space)",
-                "| X% | min_sup | #maximal-frequent | longest_km |", "|---|---|---|---|"]
-        for x in grid:
-            ms, n_r, longest = per_x[x]
-            rep.append(f"| {x} | {ms:,} | {n_r:,} | {longest:.2f} |")
+        rep += ["", "## Support-floor sweep (how length trades against strictness)",
+                "| min_sup | = X% | #maximal-frequent | longest_km |",
+                "|---|---|---|---|"]
+        for ms in sorted(per_floor, reverse=True):
+            xp, n_r, longest = per_floor[ms]
+            rep.append(f"| {ms:,} | {xp:.4f}% | {n_r:,} | {longest:.2f} |")
 
         rep += _holes_section(routes, n_trips, x_pct)
 
         csv_path = storage.write_csv(
             storage.out_path("routes", f"suffix_array_top100_{scale}.csv"),
-            ["min_len_km", "x_pct", "rank", "support", "length_km", "n_cells",
-             "subroute"],
+            ["min_len_km", "min_sup", "x_pct", "rank", "support", "support_taxis",
+             "length_km", "n_cells", "subroute"],
             all_rows)
         rp = storage.write_lines(
             storage.out_path("statistics", f"m12_suffix_array_{scale}.md"), rep)
@@ -446,6 +498,6 @@ if __name__ == "__main__":
     ap.add_argument("--x-pct", type=float, default=config.SUPPORT_X_PCT,
                     help="reference X%% for the holes analysis")
     ap.add_argument("--no-calibrate", action="store_true",
-                    help="use --x-pct alone instead of calibrating X per length")
+                    help="use --x-pct alone instead of calibrating the floor")
     args = ap.parse_args()
     main(cli.scale_of(args), args.x_pct, not args.no_calibrate)

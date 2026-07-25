@@ -34,16 +34,26 @@ _LOG_FORMAT = "%(asctime)s %(levelname)-5s %(name)s | %(message)s"
 
 # ------------------------------------------------------------------ arguments
 def scale_parser(description: str = "") -> argparse.ArgumentParser:
-    """Standard parser with the three dataset scales."""
+    """
+    Standard parser over the dataset scales.
+
+    `--sample/--mid/--full` are kept as the everyday flags; `--scale NAME` takes
+    any key in config.SCALES, which is what makes a scaling STUDY possible
+    without inventing a flag per data size.
+    """
     ap = argparse.ArgumentParser(description=description)
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--sample", action="store_true", help="small sample (fast)")
     g.add_argument("--mid", action="store_true", help="mid-scale local run")
     g.add_argument("--full", action="store_true", help="the whole dataset")
+    g.add_argument("--scale", choices=config.SCALES, default=None,
+                   help=f"any of {', '.join(config.SCALES)}")
     return ap
 
 
 def scale_of(args) -> str:
+    if getattr(args, "scale", None):
+        return args.scale
     if getattr(args, "full", False):
         return "full"
     if getattr(args, "mid", False):

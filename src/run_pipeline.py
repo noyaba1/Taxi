@@ -54,6 +54,9 @@ STAGES = [
     # recounts against the table the mining used, which cannot distinguish a real
     # corridor from a memorised training path.
     ("M17 held-out validation", "src.validate_holdout", [], ALL),
+    # Does "popular" depend on the hour? The headline lists average 2013-2014
+    # whole, and an average can describe no actual hour.
+    ("M18 temporal analysis", "src.temporal_analysis", [], ALL),
     ("M15 visualization", "src.visualization", [], ALL),
 ]
 VERIFIERS = [

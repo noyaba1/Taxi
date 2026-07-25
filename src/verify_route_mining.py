@@ -80,8 +80,45 @@ def main(scale: str) -> None:
               f"reported={r['support']} brute={brute} (len={r['length_km']}km, "
               f"{r['n_cells']} cells)")
 
+    # --- 4: distinct-TAXI support, recounted independently ---------------
+    # Method D reports support_taxis from inside its suffix-array buckets. Here
+    # we recount by containment against the trip table and compare the TAXI sets.
+    # This is the check that "popular means many drivers, not many trips by one
+    # driver" is actually implemented and not merely claimed.
+    sa_rows = storage.read_csv_rows(
+        storage.out_path("routes", f"suffix_array_top100_{scale}.csv"))
+    if sa_rows:
+        print("\n=== distinct-taxi support re-count (brute force) ===")
+        enc_taxi = (spark.read.parquet(config.dataset_paths(scale)["encoded"])
+                    .select("TAXI_ID", "h3_seq_compact")
+                    .withColumn("trip_str",
+                                F.concat(F.lit(DELIM),
+                                         F.concat_ws(DELIM, "h3_seq_compact"),
+                                         F.lit(DELIM)))
+                    .select("TAXI_ID", "trip_str")).cache()
+        seen, targets = set(), []
+        for r in sa_rows:
+            if r["subroute"] not in seen:
+                seen.add(r["subroute"])
+                targets.append(r)
+            if len(targets) >= 4:
+                break
+        for r in targets:
+            needle = DELIM + r["subroute"] + DELIM
+            brute = (enc_taxi.filter(F.instr("trip_str", needle) > 0)
+                     .select("TAXI_ID").distinct().count())
+            reported = int(r["support_taxis"])
+            match = brute == reported
+            ok &= match
+            print(f"[{'OK' if match else 'FAIL'}] L>={r['min_len_km']}km: "
+                  f"taxis reported={reported} brute={brute} "
+                  f"(trips={r['support']}, {float(r['length_km']):.2f} km)")
+
     print("\n" + ("ROUTE-MINING VERIFICATION PASSED." if ok else "ROUTE-MINING VERIFICATION FAILED."))
     spark.stop()
+    # A verifier that cannot fail is not a verifier: exit non-zero so
+    # run_pipeline --verify actually gates on the result.
+    raise SystemExit(0 if ok else 1)
 
 
 if __name__ == "__main__":

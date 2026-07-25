@@ -213,7 +213,7 @@ Every stage has a `verify_*.py` that recomputes its result a different way:
 - clustering cohesion, route continuity, graph anti-"Frankenstein", anomaly
   self-consistency.
 
-Plus **36 unit tests**, including brute-force cross-checks of the LCP-interval
+Plus **56 unit tests**, including brute-force cross-checks of the LCP-interval
 enumeration (8 cases) and the Aho-Corasick automaton (400 randomised trials), and
 a regression test that a window may never span a GPS gap.
 
@@ -354,6 +354,89 @@ turned from a convenience into a justified one.
 On the cap itself: 100k costs ~5x what 50k costs (the quadratic join, as
 predicted) and recovers 2% more corridors. The discovery curve flattens well
 before the cost curve, so 50,000 stays.
+
+---
+
+## 9c. Four things measured this round
+
+### "Popular" now means drivers, not trips
+
+Support counted distinct TRIPS. With only **442 taxis** over a year, a corridor
+driven 200 times by one driver going to their own stand is one person's habit,
+not a popular route — and trip-support cannot tell the two apart. Method D now
+carries `support_taxis` (counted exactly; the suffix-array buckets are small).
+
+The result at sample scale, from the method comparison:
+
+| min_len | routes | median trips/taxi | routes with ≤2 taxis |
+|---|---|---|---|
+| ≥1 km | 100 | 1.12 | 0 |
+| ≥3 km | 100 | 1.00 | 0 |
+| ≥5 km | 100 | 1.00 | 0 |
+| ≥10 km | 13 | 1.00 | **11** |
+
+Short corridors are genuinely public (≈1 trip per vehicle). The long band is
+**dominated by single-vehicle repeats** — 11 of 13, and the top ≥10 km entry is
+2 trips from *one* taxi. Corridor length and the confidence it deserves move in
+opposite directions, and the deliverable should be read that way.
+
+**HyperLogLog is used where it is actually warranted** — distinct taxis per H3
+cell for the activity zones (~85M (cell, taxi) pairs at full scale), not on the
+corridors. The report states honestly that at sample scale HLL is *slower* than
+exact (0.4 s vs 0.2 s, 0.80% mean error): its argument is O(1) memory per group,
+not speed, and claiming otherwise would be an unearned win.
+
+### The empty ≥20/40 km bands were the instrument
+
+`longest_km` tracks the **absolute** support floor, and the old grid was a
+**percentage** — so 0.01% meant 2 trips on the sample but 172 at 1.71M. The
+bottom of the grid got *harder to clear as the data grew*, which is backwards.
+Switching calibration to absolute floors turned ≥20 km from empty into a
+**21.36 km corridor** at mid scale, with no change to the data. The brief
+sanctions exactly this: tune X "when you are interested in maximising the
+sub-route length".
+
+### A scaling law instead of a shrug
+
+Four scales, the real miner, floors held fixed (`experiment_scaling.md`):
+
+| trips | floor=2 | floor=5 | floor=20 | floor=100 | mine_s |
+|---|---|---|---|---|---|
+| 4,745 | 11.99 | 8.36 | 5.42 | 2.87 | 5.8 |
+| 188,761 | 21.36 | 14.97 | 11.06 | 8.73 | 23.3 |
+| 377,451 | 21.36 | 15.37 | 11.54 | 10.20 | 47.7 |
+| 754,763 | 24.85 | 17.37 | 12.51 | 10.92 | 114.6 |
+
+Power-law fits, **R² 0.98–0.99**, extrapolated to 1,710,670 trips:
+
+| floor | exponent | predicted longest | ≥20 km? | ≥40 km? |
+|---|---|---|---|---|
+| 2 | 0.141 | **27.7 km** | yes | no |
+| 5 | 0.144 | 19.7 km | no | no |
+
+**Prediction: the ≥20 km band populates on the full run; ≥40 km does not.** Porto
+appears to have no 40 km stretch that even two taxis repeat. That is a finding
+about the city, not a defect — and predicting it beats being surprised by it.
+The `mine_s` column also sizes the cloud run: ~115 s at 755k extrapolates to
+roughly 4–5 minutes for the suffix array at full scale.
+
+### "Popular" is only mildly time-dependent
+
+Corridors mined per hour-of-day bucket and compared with the all-time list
+(`temporal_analysis_mid.md`, cell-set Jaccard ≥ 0.5):
+
+| bucket | trips | overlap vs all-time |
+|---|---|---|
+| night | 32,911 | **0.68** |
+| morning peak | 23,872 | 0.79 |
+| evening | 31,851 | 0.78 |
+| evening peak | 40,861 | 0.80 |
+| midday | 59,266 | **0.87** |
+
+Mean 0.78. A substantial core is shared — the road network, not demand, decides
+most of where taxis go — but **night is the least well represented**: about a
+third of night corridors do not appear in the all-time top-100. The static
+deliverable is a fair summary with a real caveat, not an artefact of averaging.
 
 ---
 

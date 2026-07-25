@@ -176,15 +176,16 @@ def test_lcp_intervals_empty_and_single():
 def test_mine_bucket_counts_trips_not_occurrences():
     """A run repeated inside ONE trip must count once."""
     suffix = list(_line())
-    rows = [("tripA", None, suffix), ("tripA", None, suffix), ("tripB", None, suffix)]
+    rows = [("tripA", "T1", None, suffix), ("tripA", "T1", None, suffix),
+            ("tripB", "T2", None, suffix)]
     got = mine_bucket(rows, min_sup=2, min_len_km=0.0, max_len_km=999.0)
     assert got, "expected at least one frequent run"
-    assert all(sup <= 2 for _k, sup, _n, _l, _br, _bl in got), \
+    assert all(sup <= 2 for _k, sup, _n, _l, _br, _bl, _tx in got), \
         "support must count distinct trips (2), not suffix occurrences (3)"
 
 
 def test_mine_bucket_prunes_below_min_support():
-    rows = [("t1", None, list(_line()))]
+    rows = [("t1", "T1", None, list(_line()))]
     assert mine_bucket(rows, min_sup=5, min_len_km=0.0, max_len_km=999.0) == []
 
 
@@ -271,10 +272,10 @@ def test_mine_bucket_reports_extension_supports():
     """
     seg = list(_line(41.15, 41.22))
     short, long_ = seg[:6], seg[:9]
-    rows = [("t1", None, short), ("t2", None, long_)]
+    rows = [("t1", "T1", None, short), ("t2", "T2", None, long_)]
     got = mine_bucket(rows, min_sup=2, min_len_km=0.0, max_len_km=999.0)
     assert got, "the shared prefix should be reported"
-    for _key, sup, _n, _l, best_right, best_left in got:
+    for _key, sup, _n, _l, best_right, best_left, _tx in got:
         # support counts distinct trips; extensions can never exceed it
         assert best_right <= sup and best_left <= sup
         # no trip precedes these runs (both start at position 0)
@@ -293,3 +294,72 @@ def test_maximal_filter_semantics_are_monotone():
     assert not maximal(20)      # extension still frequent -> not maximal
     assert maximal(40)          # extension dropped out -> maximal
     assert not maximal(60)      # route itself no longer frequent
+
+
+# ---------------- distinct-taxi support (what "popular" means) ---------------
+def test_mine_bucket_counts_distinct_taxis_not_trips():
+    """
+    A corridor driven many times by ONE taxi must not look popular.
+
+    Four trips over the same run, all from taxi T1: trip-support is 4 but
+    taxi-support must be 1 — that is the whole point of carrying both.
+    """
+    suffix = list(_line())
+    rows = [(f"trip{i}", "T1", None, suffix) for i in range(4)]
+    got = mine_bucket(rows, min_sup=2, min_len_km=0.0, max_len_km=999.0)
+    assert got, "expected a frequent run"
+    for _k, sup, _n, _l, _br, _bl, taxis in got:
+        assert sup == 4, "four distinct trips"
+        assert taxis == 1, "but only one vehicle"
+
+
+def test_mine_bucket_taxi_support_never_exceeds_trip_support():
+    """One trip has one taxi, so taxis <= trips always."""
+    import random
+
+    rng = random.Random(3)
+    suffix = list(_line())
+    rows = [(f"trip{i}", f"T{rng.randint(1, 5)}", None, suffix) for i in range(12)]
+    for _k, sup, _n, _l, _br, _bl, taxis in mine_bucket(
+            rows, min_sup=2, min_len_km=0.0, max_len_km=999.0):
+        assert 1 <= taxis <= sup
+
+
+# ---------------- absolute support floors (the >=20/40 km fix) ---------------
+def test_pct_of_is_the_inverse_of_a_percentage_floor():
+    assert config.pct_of(2, 4_745) == pytest.approx(0.04215, abs=1e-4)
+    assert config.pct_of(172, 1_710_670) == pytest.approx(0.01, abs=1e-3)
+
+
+def test_percentage_floor_is_scale_dependent_and_absolute_is_not():
+    """
+    The bug the absolute grid fixes: the SAME X% is a different demand at
+    different scales, and it gets stricter as the data grows -- which is
+    backwards for finding long corridors.
+    """
+    from src.route_mining_maximal import min_support_for
+
+    assert min_support_for(0.01, 4_745) == 2
+    assert min_support_for(0.01, 1_710_670) == 172     # 86x stricter, same X%
+    # an absolute floor means the same thing at every scale, by construction
+    assert 2 in config.SUPPORT_MIN_SUP_GRID
+
+
+def test_min_sup_grid_is_descending_and_starts_at_two():
+    g = config.SUPPORT_MIN_SUP_GRID
+    assert min(g) == 2, "a corridor one trip drove is not popular at any scale"
+    assert sorted(g) == g, "grid should be ascending for readability"
+
+
+# ---------------- time bucketing ----------------
+def test_time_buckets_tile_the_day_without_gaps_or_overlap():
+    covered = []
+    for _name, lo, hi in config.TIME_BUCKETS:
+        covered.extend(range(lo, hi))
+    assert sorted(covered) == list(range(24)), \
+        "every hour must land in exactly one bucket"
+
+
+def test_time_bucket_names_are_unique():
+    names = [b[0] for b in config.TIME_BUCKETS]
+    assert len(names) == len(set(names))

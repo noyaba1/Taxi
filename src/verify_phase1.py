@@ -51,7 +51,11 @@ def main(scale: str) -> None:
         F.round(F.avg("n_points"), 1).alias("avg_pts"),
     ).collect()[0]
     print("=== POLYLINE parse check ===")
-    print(f"rows where size(points) != n_points : {mism}  (must be 0)")
+    ok = True
+    c_parse = (mism == 0)
+    ok &= c_parse
+    print(f"[{'OK' if c_parse else 'FAIL'}] size(points) == n_points for every row "
+          f"({mism} mismatches, must be 0)")
     print(f"points per trip  min/avg/max : {pts_stats['min_pts']} / "
           f"{pts_stats['avg_pts']} / {pts_stats['max_pts']}")
     print("first trip first 3 coords (lon,lat):")
@@ -88,8 +92,16 @@ def main(scale: str) -> None:
     print(f"  too many points (>{config.MAX_POINTS}): {reasons['too_many_points']:,}")
     print(f"  outside Porto bbox     : {reasons['outside_porto_bbox']:,}")
 
+    # Real gates, not just printed counts: this file used to describe the data
+    # and always return success, so nothing it "checked" could ever fail a run.
+    c_rows = 0 < clean_n <= raw_n
+    ok &= c_rows
+    print(f"[{'OK' if c_rows else 'FAIL'}] cleaned rows in (0, raw]: "
+          f"{clean_n:,} of {raw_n:,}")
     spark.stop()
-    print("\nVERIFICATION COMPLETE.")
+    print("\n" + ("PHASE 1 VERIFICATION PASSED." if ok
+                  else "PHASE 1 VERIFICATION FAILED."))
+    raise SystemExit(0 if ok else 1)
 
 
 if __name__ == "__main__":

@@ -30,7 +30,20 @@
       "Bash(zip -qr /tmp/pkgtest/src.zip src -x \"*/__pycache__/*\")",
       "Read(//tmp/**)",
       "Bash(cp /Users/nadavcohen/Desktop/Taxi-Project/Taxi/src/evaluation.py ./main.py)",
-      "Bash(rm -rf /tmp/porto_rehearsal /tmp/pkgtest)"
+      "Bash(rm -rf /tmp/porto_rehearsal /tmp/pkgtest)",
+      "Bash(.venv/bin/python -m src.make_sample --scale s400k --help)",
+      "Bash(.venv/bin/python -m src.route_mining_graph --sample)",
+      "Bash(.venv/bin/python -m src.evaluation --sample)",
+      "Bash(.venv/bin/python -c \"from src.route_mining_suffix_array import mine, mine_encoded; print\\('both callable'\\)\")",
+      "Bash(.venv/bin/python -m src.temporal_analysis --mid)",
+      "Bash(sed 's|.*/||')",
+      "Bash(.venv/bin/python -m src.experiment_scaling)",
+      "Bash(.venv/bin/python -m src.verify_route_mining --sample)",
+      "Bash(.venv/bin/python -m src.verify_phase1 --sample)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(.venv/bin/python -m src.verify_maximal --sample)",
+      "Bash(.venv/bin/python -m src.verify_encoding --sample)",
+      "Bash(rm -rf /tmp/porto_rehearsal)"
     ]
   }
 }

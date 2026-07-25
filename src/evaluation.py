@@ -49,6 +49,58 @@ METHODS = {
 }
 
 
+def _taxi_diversity(scale):
+    """
+    Where trip-popularity and taxi-popularity disagree.
+
+    Support counts distinct TRIPS. With only 442 vehicles over a year, a corridor
+    driven 200 times by one driver going to their own stand is not popular in the
+    sense the brief means -- it is one person's habit. Method D carries
+    `support_taxis` so the two can be separated; this section reports how much of
+    the headline deliverable is actually single-driver behaviour.
+    """
+    rows = storage.read_csv_rows(
+        storage.out_path("routes", f"suffix_array_top100_{scale}.csv"))
+    rows = [r for r in rows if r.get("support_taxis")]
+    if not rows:
+        return []
+
+    out = ["", "## Is it a popular route, or one driver's habit?", "",
+           "`support` counts distinct trips; `taxis` counts distinct vehicles. "
+           "A corridor with many trips but few taxis is a commute, a depot run or "
+           "a rank shuttle -- not a route the city uses. Ratio = trips per taxi.",
+           "",
+           "| min_len_km | routes | median trips/taxi | worst ratio | routes with <=2 taxis |",
+           "|---|---|---|---|---|"]
+    flagged_examples = []
+    for L in config.ROUTE_LENGTH_THRESHOLDS_KM:
+        grp = [r for r in rows if int(r["min_len_km"]) == L]
+        if not grp:
+            continue
+        ratios = sorted(int(r["support"]) / max(int(r["support_taxis"]), 1)
+                        for r in grp)
+        median = ratios[len(ratios) // 2]
+        worst = ratios[-1]
+        few = [r for r in grp if int(r["support_taxis"]) <= 2]
+        out.append(f"| {L} | {len(grp)} | {median:.2f} | {worst:.2f} | {len(few)} |")
+        for r in sorted(grp, key=lambda r: -int(r["support"])
+                        / max(int(r["support_taxis"]), 1))[:1]:
+            flagged_examples.append(
+                (L, int(r["support"]), int(r["support_taxis"]),
+                 float(r["length_km"])))
+
+    out += ["", "Least-diverse corridor at each length:", ""]
+    for L, sup, tax, km in flagged_examples:
+        out.append(f"- `>={L} km`: {sup} trips but only **{tax} taxi(s)** "
+                   f"over {km:.2f} km — {sup / max(tax, 1):.1f} trips per vehicle.")
+    out += ["",
+            "A ratio near 1.0 means almost every trip came from a different "
+            "vehicle: genuinely public. A high ratio marks a route that the "
+            "trip-support deliverable would rank as popular and a passenger would "
+            "not recognise as one."]
+    return out
+
+
 def _load(method, scale):
     """[(cellset, support, length_km, min_len_km)] for a method, [] if absent."""
     fname, rcol, _label = METHODS[method]
@@ -217,6 +269,7 @@ def _main(scale: str) -> None:
                 cells.append("-" if v is None else f"{v:.2f}")
         lines.append(f"| {a} | " + " | ".join(cells) + " |")
 
+    lines += _taxi_diversity(scale)
     lines += _interpret(dsets, overlaps, present)
 
     rp = storage.write_lines(

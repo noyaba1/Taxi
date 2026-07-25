@@ -58,7 +58,10 @@ def main(scale: str) -> None:
     ).select("trip_str")
     trips.cache()
     n_trips = trips.count()
-    min_sup = max(2, math.ceil(config.SUPPORT_X_PCT / 100.0 * n_trips))
+    # The floor is calibrated PER LENGTH BAND now, so a single global X% is the
+    # wrong yardstick -- checking a >=5 km route against the >=1 km floor made
+    # this verifier report failures for routes that were perfectly correct.
+    # Each row carries the floor it was mined at; verify against that.
 
     rows = storage.read_csv_rows(csv_path)
     if not rows:
@@ -67,8 +70,8 @@ def main(scale: str) -> None:
         spark.stop()
         return
 
-    print(f"Spark {spark.version} | trips={n_trips:,} | X%={config.SUPPORT_X_PCT}% "
-          f"min_sup={min_sup} | rows={len(rows)}")
+    print(f"Spark {spark.version} | trips={n_trips:,} | rows={len(rows)} "
+          f"| floors used: {sorted({int(r['min_sup']) for r in rows})}")
     ok = True
 
     # --- 1. structural ---
@@ -88,6 +91,7 @@ def main(scale: str) -> None:
     print("\n=== independent frequent + maximal checks ===")
     for r in targets:
         s = r["subroute"]
+        min_sup = int(r["min_sup"])            # the floor THIS row was mined at
         sup = _contain_support(trips, s)
         rext = _best_right_ext(trips, s)
         lext = _best_left_ext(trips, s)
@@ -96,12 +100,14 @@ def main(scale: str) -> None:
         c_max = (rext < min_sup and lext < min_sup)
         ok &= c_sup and c_freq and c_max
         print(f"[{'OK' if (c_sup and c_freq and c_max) else 'FAIL'}] "
-              f"L>={r['min_len_km']} rank{r['rank']}: support={sup} (reported {r['support']}) "
-              f">=min_sup? {c_freq} | best_ext L={lext} R={rext} <min_sup? {c_max}")
+              f"L>={r['min_len_km']} rank{r['rank']} (floor={min_sup}): "
+              f"support={sup} (reported {r['support']}) >=floor? {c_freq} "
+              f"| best_ext L={lext} R={rext} <floor? {c_max}")
 
     # --- 5. holes: top route's forks each below min_sup ---
     print("\n=== holes: top route continuations (each must be < min_sup) ===")
     top = min(rows, key=lambda r: (int(r["min_len_km"]) != 1, int(r["rank"])))  # L>=1 rank1
+    min_sup = int(top["min_sup"])
     s = top["subroute"]
     pat = DELIM + s + DELIM + "([^>]+)" + DELIM
     forks = (trips.withColumn("c", F.regexp_extract("trip_str", pat, 1))
@@ -115,6 +121,9 @@ def main(scale: str) -> None:
 
     print("\n" + ("MAXIMAL VERIFICATION PASSED." if ok else "MAXIMAL VERIFICATION FAILED."))
     spark.stop()
+    # A verifier that cannot fail is not a verifier: exit non-zero so
+    # run_pipeline --verify actually gates on the result.
+    raise SystemExit(0 if ok else 1)
 
 
 if __name__ == "__main__":
