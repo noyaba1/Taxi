@@ -52,8 +52,13 @@ if [[ "$DRY_RUN" == "1" ]]; then
   chk "dataproc API enabled"             "gcloud services list --enabled --project '$PROJECT' | grep -q dataproc"
   chk "storage API enabled"              "gcloud services list --enabled --project '$PROJECT' | grep -q storage-component"
   chk "bucket '$BUCKET' exists"          "gsutil ls -b '$BUCKET'"
-  chk "local train.csv resolves"         "python3 -c 'import os,sys; from src import config; sys.exit(0 if os.path.exists(config.RAW_TRAIN) else 1)'"
-  chk "local held-out csv resolves"      "python3 -c 'import os,sys; from src import config; sys.exit(0 if os.path.exists(config.RAW_TEST) else 1)'"
+  # The data may live EITHER on this machine (laptop flow) OR already in the
+  # bucket (Cloud Shell flow, where the repo is cloned fresh and has no data).
+  # Requiring the local copy would fail the check for a perfectly good setup.
+  have_train="python3 -c 'import os,sys; from src import config; sys.exit(0 if os.path.exists(config.RAW_TRAIN) else 1)' || gsutil -q stat '$DATA/raw/train.csv'"
+  have_test="python3 -c 'import os,sys; from src import config; sys.exit(0 if os.path.exists(config.RAW_TEST) else 1)' || gsutil -q stat '$DATA/raw/test.csv'"
+  chk "train.csv available (local or in bucket)"   "$have_train"
+  chk "held-out csv available (local or in bucket)" "$have_test"
   chk "src package imports"              "python3 -c 'import src.config, src.storage, src.run_pipeline'"
   chk "zip available"                    "command -v zip"
 
