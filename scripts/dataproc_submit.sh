@@ -28,11 +28,16 @@ DRY_RUN="${DRY_RUN:-0}"           # 1 = check everything, create and bill nothin
 # debian11, NOT debian12 -- `gcloud dataproc clusters create` rejects invalid
 # combinations, and the accepted list changes over time, hence the override.
 IMAGE="${IMAGE:-2.2-debian12}"
-# The init action pip-installs three packages on every node. The DEFAULT timeout
-# is 10 minutes, and python-geohash ships as an sdist only -- it compiles a C++
-# extension on each node -- so a cold pip resolve plus a build can exceed it and
-# the whole cluster creation is rolled back. 20m costs nothing when pip is fast.
-INIT_TIMEOUT="${INIT_TIMEOUT:-20m}"
+# Pinned deps, staged as wheels into the bucket because the cluster has no PyPI
+# route (see the wheelhouse block below). PY_VER must match the image's
+# interpreter -- Dataproc 2.2 is Python 3.11 -- or the wheels will not install.
+PY_VER="${PY_VER:-3.11}"
+H3_VER="${H3_VER:-3.7.7}"
+DS_VER="${DS_VER:-5.0.2}"
+GEOHASH_VER="${GEOHASH_VER:-0.8.5}"
+# Default init timeout is 10m. Copying ~2 MB of wheels from GCS takes seconds,
+# but a slow node should not roll back the whole cluster.
+INIT_TIMEOUT="${INIT_TIMEOUT:-15m}"
 PREFIX="${PREFIX:-porto}"         # folder inside the bucket; "porto" is just the
                                   # city the dataset comes from. Cosmetic -- set
                                   # it to anything, or "" to use the bucket root.
@@ -116,16 +121,49 @@ ensure_input train.csv "$RAW_LOCAL"
 # The held-out split feeds validate_holdout (the only check on unseen data).
 ensure_input test.csv  "$TEST_LOCAL"
 
+# --------------------------------------------------------------------------
+# Wheelhouse: the cluster cannot reach PyPI.
+#
+# Measured, not assumed -- the stock pip-install.sh init action died with
+#   [Errno 101] Network is unreachable   ...   /simple/h3/
+# on all three nodes. The VMs have no internet egress, which is normal for a
+# restricted org VPC. They CAN reach GCS, so we stage platform wheels there from
+# this machine (which has internet) and install with --no-index on the nodes.
+#
+# Wheels are built for the image's interpreter, NOT this laptop's: Dataproc 2.2
+# is Python 3.11 on manylinux x86_64, and this script may well be run from an
+# arm64 Mac. --no-deps keeps numpy off the list; the image already has a 1.x that
+# its pandas/pyarrow are compiled against, and replacing it breaks pandas_udf.
+# --------------------------------------------------------------------------
+WHEELHOUSE="$DATA/wheels"
+echo "== stage dependency wheels (cluster has no PyPI access) =="
+if [[ "${FORCE_WHEELS:-0}" != "1" ]] && gsutil -q stat "$WHEELHOUSE/h3-$H3_VER-"*; then
+  echo "   wheelhouse already present -> $WHEELHOUSE (FORCE_WHEELS=1 to rebuild)"
+else
+  WHTMP="$(mktemp -d)"
+  python3 -m pip download --no-deps --only-binary=:all: \
+    --platform manylinux2014_x86_64 --python-version "$PY_VER" --implementation cp \
+    -d "$WHTMP" "h3==$H3_VER" "datasketches==$DS_VER"
+  # sdist: optional, and the init action treats a build failure as non-fatal.
+  python3 -m pip download --no-deps --no-binary=:all: -d "$WHTMP" \
+    "python-geohash==$GEOHASH_VER" || echo "   (python-geohash sdist unavailable; optional)"
+  gsutil -q -m cp "$WHTMP"/* "$WHEELHOUSE/"
+  rm -rf "$WHTMP"
+  echo "   staged -> $WHEELHOUSE"
+fi
+gsutil -q cp scripts/init_offline_deps.sh "$DATA/scripts/init_offline_deps.sh"
+
 echo "== create cluster (1 master + $WORKERS workers) =="
-# h3 + datasketches are NOT on a stock DataProc image; install on every node.
-# (numpy/pandas/pyarrow ARE preinstalled on 2.1, so pandas_udf works.)
+# h3 + datasketches are NOT on a stock DataProc image; install on every node,
+# from the GCS wheelhouse rather than PyPI (see above).
+# (numpy/pandas/pyarrow ARE preinstalled, so pandas_udf works out of the box.)
 gcloud dataproc clusters create "$CLUSTER" --region "$REGION" \
   --master-machine-type n2-standard-4 --num-masters 1 \
   --worker-machine-type n2-standard-4 --num-workers "$WORKERS" \
   --image-version "$IMAGE" --max-idle 30m \
-  --initialization-actions "gs://goog-dataproc-initialization-actions-$REGION/python/pip-install.sh" \
+  --initialization-actions "$DATA/scripts/init_offline_deps.sh" \
   --initialization-action-timeout "$INIT_TIMEOUT" \
-  --metadata PIP_PACKAGES="h3==3.7.7 datasketches==5.0.2 python-geohash==0.8.5" \
+  --metadata WHEELHOUSE_URI="$WHEELHOUSE" \
   --properties spark:spark.sql.adaptive.enabled=true,spark:spark.sql.adaptive.skewJoin.enabled=true,spark:spark.sql.shuffle.partitions=400
 
 # Auto-delete the cluster on ANY exit (success, failure, Ctrl-C) -> budget-safe.
@@ -166,12 +204,14 @@ submit summarize_features.py
 # (H3 8/9/10 + geohash 6/7) and adds a distinct-cell count and a bearing-entropy
 # groupBy to each. That is five extra full passes to justify a design choice --
 # and the justification is qualitatively identical on a sample, where it already
-# ran. Paying for it at 1.71M is burning budget for no extra information.
-if [[ "$SCALE" == "--full" ]]; then
-  submit spatial_encoding.py
-else
-  submit spatial_encoding.py --compare-grids
-fi
+# ran locally and is reported in docs/FINAL_REPORT.md.
+#
+# It is off in the CLOUD at every scale, deliberately. The sweep is the only
+# thing here that imports `geohash`, which is sdist-only and therefore the one
+# dependency that can fail to install on an offline node. Keeping it out means
+# the --sample rehearsal exercises exactly the dependency set the --full run
+# needs -- a rehearsal that tests more than the real thing is a worse rehearsal.
+submit spatial_encoding.py
 
 # Deliverable-producing stages FIRST, so a failure in the expensive demonstration
 # below cannot cost us the actual results.
