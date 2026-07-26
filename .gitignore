@@ -32,3 +32,8 @@ taxi+service+trajectory+prediction+challenge+ecml+pkdd+2015/
 
 # Machine-local Claude Code settings (permissions differ per developer)
 .claude/settings.local.json
+
+# Build artifact from scripts/dataproc_submit.sh
+src.zip
+# Cloud outputs downloaded for verification (regenerable from GCS)
+cloud_outputs/
