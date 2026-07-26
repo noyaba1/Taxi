@@ -17,8 +17,17 @@ Methods compared:
   D = suffix array     (generalised suffix array + LCP intervals)
 
 All four now report the SAME unit -- a contiguous sub-route with a distinct-trip
-support -- so the popularity columns are directly comparable. They were not
-before: Method A used to report whole trajectories counted by cluster size.
+support. They were not before: Method A used to report whole trajectories counted
+by cluster size.
+
+That makes a support number mean the same thing everywhere, but it does NOT make
+`top_support` comparable ACROSS methods, and the report says so explicitly. B and
+D emit only MAXIMAL sub-routes (no one-cell extension is itself frequent); A and C
+do not, so they can report a short, very common PREFIX that B and D suppress as
+redundant. Measured at >=1 km: A's top route is in 79,952 trips and its best
+extension is still in 64,936 -- not maximal, so D omits it and reports 14,330 for a
+route that cannot be extended. Both are exact counts of different things. Compared
+naively, the table makes the strongest method look like the weakest.
 
 EVERY NUMBER AND EVERY CONCLUSION BELOW IS COMPUTED.
 This report used to end with a hard-coded paragraph asserting which methods
@@ -47,6 +56,10 @@ METHODS = {
     "C": ("graph_heavy_paths_top100", "route", "transition-graph"),
     "D": ("suffix_array_top100", "subroute", "suffix-array"),
 }
+
+# Gated to sample scale in run_pipeline.STAGES: these share the O(n^2) window
+# table. Their absence at a larger scale is the design, not a failed stage.
+SAMPLE_ONLY_METHODS = {"B"}
 
 
 def _taxi_diversity(scale):
@@ -149,7 +162,7 @@ def _timings(scale):
     return list(seen.values())
 
 
-def _interpret(dsets, overlaps, present):
+def _interpret(dsets, overlaps, present, scale="sample"):
     """Derive the conclusions from the numbers rather than asserting them."""
     lines = ["", "## Interpretation (derived from the tables above)"]
 
@@ -178,9 +191,21 @@ def _interpret(dsets, overlaps, present):
         lines.append(f"- {m} ({METHODS[m][2]}): {len(rs)} distinct routes, "
                      f"top support {top}, longest {longest:.2f} km.")
 
+    # "Missing" has two very different meanings and conflating them misreads as a
+    # gap in the run. B shares the O(n^2) window table with M5/M6 and is gated to
+    # sample scale on purpose (measured at 200k: M5 OOMs, M8 spilled 21 GB without
+    # finishing). At any larger scale its absence is the design, not an omission.
     missing = [m for m in METHODS if m not in present]
-    if missing:
-        lines.append(f"- No output for method(s) {', '.join(missing)}; run those "
+    by_design = [m for m in missing if m in SAMPLE_ONLY_METHODS and scale != "sample"]
+    not_run = [m for m in missing if m not in by_design]
+    if by_design:
+        lines.append(
+            f"- Method(s) {', '.join(by_design)} are absent BY DESIGN at "
+            f"scale={scale}: they enumerate O(n^2) windows and are gated to sample "
+            f"scale. D reproduces B's maximal-frequent output exactly from a single "
+            f"pass, so nothing is lost by their absence here.")
+    if not_run:
+        lines.append(f"- No output for method(s) {', '.join(not_run)}; run those "
                      f"stages before quoting this comparison.")
     return lines
 
@@ -199,8 +224,24 @@ def _main(scale: str) -> None:
     lines = [f"# Cross-Method Comparison ({scale})", ""]
     lines += [f"- **{m}** = {METHODS[m][2]}" for m in METHODS]
     lines += ["",
-              "All methods report contiguous sub-routes with distinct-trip support,",
-              "so popularity is directly comparable across columns.", ""]
+              "All four report contiguous sub-routes and count support the same way "
+              "(distinct trips containing the route), so a single support number "
+              "means the same thing everywhere.",
+              "",
+              "**`top_support` is NOT comparable across methods, and the difference "
+              "is definitional, not a defect.** B and D report only *maximal* "
+              "sub-routes: a route is emitted only if no one-cell extension is "
+              "itself frequent. A and C have no such constraint, so they may report "
+              "a short, very common PREFIX of a longer corridor -- which B and D "
+              "deliberately suppress as redundant.",
+              "",
+              "Measured on this dataset at `>=1 km`: A's top route (4 cells, 1.10 km) "
+              "is contained in 79,952 trips, and its best one-cell extension is still "
+              "contained in 64,936 -- far above the band's floor. It is therefore not "
+              "maximal, D omits it, and D's top figure (14,330) describes a route that "
+              "cannot be extended. Both counts are exact; they answer different "
+              "questions. Read `top_support` DOWN a method's column, never ACROSS.",
+              ""]
 
     # --- summary per method at each length config ---
     lines += ["## Routes / popularity / longest, per min-length",
@@ -270,7 +311,7 @@ def _main(scale: str) -> None:
         lines.append(f"| {a} | " + " | ".join(cells) + " |")
 
     lines += _taxi_diversity(scale)
-    lines += _interpret(dsets, overlaps, present)
+    lines += _interpret(dsets, overlaps, present, scale)
 
     rp = storage.write_lines(
         storage.out_path("statistics", f"method_comparison_{scale}.md"), lines)
