@@ -9,6 +9,9 @@ Why a factory?
   The single env var SPARK_ENV="cloud" flips the behaviour, so the same
   scripts run in both places untouched.
 """
+from __future__ import annotations  # PEP-604 `X | None` in signatures
+# must not be evaluated at import time: the DataProc submit script reads
+# config with the SYSTEM python3, which on Debian/Cloud Shell can be 3.9.
 import os
 import sys
 from pyspark.sql import SparkSession

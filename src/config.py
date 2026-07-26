@@ -18,6 +18,9 @@ That principle is now ENFORCED rather than merely stated:
   * Mining constants live here only; `route_mining_exact` used to redefine the
     length thresholds locally, so editing this file silently did nothing.
 """
+from __future__ import annotations  # PEP-604 `X | None` in signatures
+# must not be evaluated at import time: the DataProc submit script reads
+# config with the SYSTEM python3, which on Debian/Cloud Shell can be 3.9.
 from pathlib import Path
 import os
 

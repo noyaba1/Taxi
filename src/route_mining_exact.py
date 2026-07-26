@@ -36,6 +36,9 @@ so it takes `--max-trips` and refuses to silently attempt a run it cannot finish
 Run:
     python -m src.route_mining_exact --sample
 """
+from __future__ import annotations  # PEP-604 `X | None` in signatures
+# must not be evaluated at import time: the DataProc submit script reads
+# config with the SYSTEM python3, which on Debian/Cloud Shell can be 3.9.
 import time
 from datetime import datetime, timezone
 

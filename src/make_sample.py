@@ -17,6 +17,9 @@ Two scales, so the local story is complete before any spend:
 The mid-scale run is the one that catches what the tiny sample cannot: hot-key
 skew in the sub-route groupBy, spill, and memory pressure.
 """
+from __future__ import annotations  # PEP-604 `X | None` in signatures
+# must not be evaluated at import time: the DataProc submit script reads
+# config with the SYSTEM python3, which on Debian/Cloud Shell can be 3.9.
 from src import cli, config
 from src.load_data import load_raw
 from src.spark_session import get_spark
