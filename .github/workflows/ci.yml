@@ -42,8 +42,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # `python -m pytest`, not the bare `pytest` console script: the module form
+      # is what SETUP.md tells people to run, and CI should exercise the
+      # documented command. (pyproject.toml sets pythonpath so both forms work
+      # now, but keeping them identical is what stops them drifting apart again.)
       - name: Unit tests (pure functions + storage layer)
-        run: pytest tests/ -q
+        run: python -m pytest tests/
 
       # Catches import cycles, syntax errors and bad argparse wiring across every
       # stage without needing the dataset. A stage that cannot even be imported

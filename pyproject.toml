@@ -1,0 +1,18 @@
+[tool.pytest.ini_options]
+# WHY THIS FILE EXISTS
+# --------------------
+# The tests import the project as `from src import ...`, which only works if the
+# repository root is on sys.path. How pytest is invoked decides whether it is:
+#
+#   python -m pytest tests/   ->  Python prepends CWD to sys.path. Works.
+#   pytest tests/             ->  console script; CWD is NOT added. ImportError.
+#
+# CI used the second form while everyone locally used the first, so the tests
+# passed on every laptop and failed on every push -- a difference in *invocation*
+# masquerading as a difference in code.
+#
+# `pythonpath` makes the repo root importable regardless of how pytest is
+# started, so the two forms cannot diverge again.
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"
