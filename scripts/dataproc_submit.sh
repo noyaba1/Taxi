@@ -207,6 +207,14 @@ done
 
 submit () {  # $1 = module file under src/ ; $2.. = extra args
   local mod="$1"; shift
+  # ONLY="a.py b.py" re-runs just those stages against parquet already in GCS.
+  # Without it, fixing one report means paying for the whole pipeline again --
+  # and the expensive stages (m7_approx, m12_suffix_array) are exactly the ones
+  # you did NOT change. The upstream parquet is untouched, so a targeted re-run
+  # reads the same inputs the full run produced.
+  if [[ -n "${ONLY:-}" && " $ONLY " != *" $mod "* ]]; then
+    return 0
+  fi
   echo "== submit $mod $SCALE $* =="
   gcloud dataproc jobs submit pyspark "src/$mod" \
     --cluster "$CLUSTER" --region "$REGION" \
