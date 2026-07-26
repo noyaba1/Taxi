@@ -215,6 +215,18 @@ submit () {  # $1 = module file under src/ ; $2.. = extra args
 #   route_mining_suffix / _suffix_array -> two of the required method families
 #   evaluation -> the cross-method comparison report
 #   visualization -> the map
+# At every scale EXCEPT --full the pipeline reads a pre-built sample rather than
+# the raw CSV (config.dataset_paths: raw_csv = sample_csv_dir(scale) unless the
+# scale is "full"). Locally that sample comes from `run_pipeline --build-sample`;
+# in the cloud nothing built it, so clean_data died on
+#   [PATH_NOT_FOUND] gs://.../taxi/sample/train_sample.csv_dir
+# --full reads RAW_TRAIN directly and never needs this, which is exactly why the
+# gap could only ever surface in the rehearsal -- the cheap run whose job is to
+# find things like this before the expensive one.
+if [[ "$SCALE" != "--full" ]]; then
+  submit make_sample.py
+fi
+
 submit clean_data.py
 submit feature_engineering.py
 submit summarize_features.py
