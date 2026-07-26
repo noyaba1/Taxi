@@ -23,9 +23,12 @@ CLUSTER="${CLUSTER:-porto}"
 SCALE="${SCALE:---full}"          # --sample for a cheap cloud rehearsal first
 WORKERS="${WORKERS:-5}"           # the brief asks for >=5 machines in the cluster
 DRY_RUN="${DRY_RUN:-0}"           # 1 = check everything, create and bill nothing
+PREFIX="${PREFIX:-porto}"         # folder inside the bucket; "porto" is just the
+                                  # city the dataset comes from. Cosmetic -- set
+                                  # it to anything, or "" to use the bucket root.
 # ---------------------------------------------------------------------------
 
-DATA="$BUCKET/porto"
+DATA="$BUCKET${PREFIX:+/$PREFIX}"
 OUT="$DATA/outputs"
 
 if [[ "$PROJECT" == "your-project-id" || "$BUCKET" == "gs://your-bucket" ]]; then
