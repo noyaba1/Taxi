@@ -89,14 +89,27 @@ echo "== package + upload code + raw data =="
 zip -qr src.zip src -x "*/__pycache__/*"
 gsutil cp src.zip "$BUCKET/code/src.zip"
 # Resolve the raw file the same way config.py does, so the two cannot drift.
+# Upload each input only if it is not already in the bucket. Report where the
+# data is ACTUALLY coming from -- printing the local fallback path before knowing
+# whether it is needed made a working run look broken.
+ensure_input () {  # $1 = object name in the bucket, $2 = local fallback path
+  if gsutil -q stat "$DATA/raw/$1"; then
+    echo "   $1: already in bucket -> $DATA/raw/$1 (no upload needed)"
+  elif [[ -f "$2" ]]; then
+    echo "   $1: uploading from $2 ..."
+    gsutil -m cp "$2" "$DATA/raw/$1"
+  else
+    echo "ERROR: $1 is neither in the bucket ($DATA/raw/$1) nor on this machine" >&2
+    echo "       ($2). Upload it to the bucket, or set RAW_TRAIN / RAW_TEST." >&2
+    exit 1
+  fi
+}
+
 RAW_LOCAL="$(python3 -c 'from src import config; print(config.RAW_TRAIN)')"
 TEST_LOCAL="$(python3 -c 'from src import config; print(config.RAW_TEST)')"
-echo "   local raw file : $RAW_LOCAL"
-echo "   held-out file  : $TEST_LOCAL"
-gsutil -q stat "$DATA/raw/train.csv" || gsutil -m cp "$RAW_LOCAL" "$DATA/raw/train.csv"
+ensure_input train.csv "$RAW_LOCAL"
 # The held-out split feeds validate_holdout (the only check on unseen data).
-# Small file; upload it or that stage has nothing to validate against.
-gsutil -q stat "$DATA/raw/test.csv" || gsutil -m cp "$TEST_LOCAL" "$DATA/raw/test.csv"
+ensure_input test.csv  "$TEST_LOCAL"
 
 echo "== create cluster (1 master + $WORKERS workers) =="
 # h3 + datasketches are NOT on a stock DataProc image; install on every node.
