@@ -37,3 +37,6 @@ taxi+service+trajectory+prediction+challenge+ecml+pkdd+2015/
 src.zip
 # Cloud outputs downloaded for verification (regenerable from GCS)
 cloud_outputs/
+
+# Generated deck (rebuild: python scripts/build_deck_charts.py && python scripts/build_deck.py)
+build/
