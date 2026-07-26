@@ -148,6 +148,29 @@ def get_spark(app_name: str = "porto-taxi", shuffle_parts: int | None = None) ->
     env = os.environ.get("SPARK_ENV", "local")
     builder = SparkSession.builder.appName(app_name)
 
+    # A cluster node that falls through to "local" is the most dangerous state
+    # this project has: config.OUTPUT_BASE would silently default to a path on
+    # the master's local disk, every report and CSV would be written there, and
+    # the whole lot would be destroyed when the cluster is deleted -- with the
+    # run reporting success. src/storage.py cannot catch it, because by then the
+    # base path is already a plain local path and storage is behaving correctly.
+    #
+    # MEASURED: this happened. `spark.yarn.appMasterEnv.*` only reaches the
+    # driver in CLUSTER deploy mode, and `gcloud dataproc jobs submit` uses
+    # CLIENT mode, so the driver saw no SPARK_ENV at all. It crashed on the
+    # local temp dir instead of losing the outputs, which was luck.
+    #
+    # So: never infer "local" on a machine that is obviously a Dataproc node.
+    if env == "local" and os.path.isdir("/etc/google-dataproc"):
+        raise RuntimeError(
+            "SPARK_ENV is not set to 'cloud' but this is a DataProc node.\n"
+            "Refusing to start a local-mode session: config.OUTPUT_BASE would\n"
+            f"resolve to {config.OUTPUT_BASE!r} on this machine's local disk and\n"
+            "every result would be lost when the cluster is deleted.\n"
+            "Fix the submit script's environment plumbing (spark-env: cluster\n"
+            "properties), do not work around this check."
+        )
+
     if env == "local":
         # Spark launches Python WORKERS via `python3` from PATH, which is the
         # system interpreter (3.13 here) -- not the venv the driver is running

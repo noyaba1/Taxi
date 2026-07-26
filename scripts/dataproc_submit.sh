@@ -178,16 +178,25 @@ gcloud dataproc clusters create "$CLUSTER" --region "$REGION" \
   --initialization-actions "$DATA/scripts/init_offline_deps.sh" \
   --initialization-action-timeout "$INIT_TIMEOUT" \
   --metadata WHEELHOUSE_URI="$WHEELHOUSE" \
-  --properties spark:spark.sql.adaptive.enabled=true,spark:spark.sql.adaptive.skewJoin.enabled=true,spark:spark.sql.shuffle.partitions=400
+  --properties="^;^spark:spark.sql.adaptive.enabled=true;spark:spark.sql.adaptive.skewJoin.enabled=true;spark:spark.sql.shuffle.partitions=400;spark-env:SPARK_ENV=cloud;spark-env:DATA_BASE=$DATA;spark-env:RAW_TRAIN=$DATA/raw/train.csv;spark-env:RAW_TEST=$DATA/raw/test.csv;spark-env:OUTPUT_BASE=$OUT"
 
-# Env for driver (appMaster) AND executors. OUTPUT_BASE is a gs:// path: every
-# report and CSV goes through src/storage.py, which writes to Hadoop FS when the
-# path has a URI scheme.
-E="spark.yarn.appMasterEnv"; X="spark.executorEnv"
+# Env for the EXECUTORS. OUTPUT_BASE is a gs:// path: every report and CSV goes
+# through src/storage.py, which writes to Hadoop FS when the path has a URI
+# scheme.
+#
+# The DRIVER is handled at cluster-creation time via `spark-env:` properties
+# (above), NOT here. `spark.yarn.appMasterEnv.*` looks like the right knob and
+# is not: it only reaches the driver in CLUSTER deploy mode, and
+# `gcloud dataproc jobs submit` runs the driver in CLIENT mode on the master.
+# Setting it here left the driver with no SPARK_ENV and no OUTPUT_BASE at all.
+# `spark-env:` writes into /etc/spark/conf/spark-env.sh, which spark-submit
+# sources (under `set -a`) for the client-mode driver -- so it works in both
+# modes and needs no per-job repetition.
+X="spark.executorEnv"
 COMMON="SPARK_ENV=cloud,DATA_BASE=$DATA,RAW_TRAIN=$DATA/raw/train.csv,RAW_TEST=$DATA/raw/test.csv,OUTPUT_BASE=$OUT"
 ENVPROPS=""
 for kv in ${COMMON//,/ }; do
-  ENVPROPS="${ENVPROPS:+$ENVPROPS,}$E.$kv,$X.$kv"
+  ENVPROPS="${ENVPROPS:+$ENVPROPS,}$X.$kv"
 done
 
 submit () {  # $1 = module file under src/ ; $2.. = extra args
