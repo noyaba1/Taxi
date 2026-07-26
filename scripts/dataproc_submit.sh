@@ -38,6 +38,12 @@ GEOHASH_VER="${GEOHASH_VER:-0.8.5}"
 # Default init timeout is 10m. Copying ~2 MB of wheels from GCS takes seconds,
 # but a slow node should not roll back the whole cluster.
 INIT_TIMEOUT="${INIT_TIMEOUT:-15m}"
+# `gcloud dataproc jobs submit` runs the driver in CLIENT mode, on the master.
+# DataProc's default driver heap there is ~4g, but evaluation and visualization
+# collect to the driver and the local --full run needed SPARK_DRIVER_MEM=10g.
+# An n2-standard-4 master has 16g, so 8g leaves room for the YARN/HDFS daemons
+# while removing an OOM that would land an hour into a paid run.
+DRIVER_MEM="${DRIVER_MEM:-8g}"
 PREFIX="${PREFIX:-porto}"         # folder inside the bucket; "porto" is just the
                                   # city the dataset comes from. Cosmetic -- set
                                   # it to anything, or "" to use the bucket root.
@@ -178,7 +184,7 @@ gcloud dataproc clusters create "$CLUSTER" --region "$REGION" \
   --initialization-actions "$DATA/scripts/init_offline_deps.sh" \
   --initialization-action-timeout "$INIT_TIMEOUT" \
   --metadata WHEELHOUSE_URI="$WHEELHOUSE" \
-  --properties="^;^spark:spark.sql.adaptive.enabled=true;spark:spark.sql.adaptive.skewJoin.enabled=true;spark:spark.sql.shuffle.partitions=400;spark-env:SPARK_ENV=cloud;spark-env:DATA_BASE=$DATA;spark-env:RAW_TRAIN=$DATA/raw/train.csv;spark-env:RAW_TEST=$DATA/raw/test.csv;spark-env:OUTPUT_BASE=$OUT"
+  --properties="^;^spark:spark.sql.adaptive.enabled=true;spark:spark.sql.adaptive.skewJoin.enabled=true;spark:spark.sql.shuffle.partitions=400;spark:spark.driver.memory=$DRIVER_MEM;spark:spark.driver.maxResultSize=4g;spark-env:SPARK_ENV=cloud;spark-env:DATA_BASE=$DATA;spark-env:RAW_TRAIN=$DATA/raw/train.csv;spark-env:RAW_TEST=$DATA/raw/test.csv;spark-env:OUTPUT_BASE=$OUT"
 
 # Env for the EXECUTORS. OUTPUT_BASE is a gs:// path: every report and CSV goes
 # through src/storage.py, which writes to Hadoop FS when the path has a URI
