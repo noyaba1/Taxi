@@ -206,6 +206,11 @@ def get_spark(app_name: str = "porto-taxi", shuffle_parts: int | None = None) ->
     # stated explicitly because downtown H3 cells ARE hot keys -- this is the
     # single most important setting for the sub-route groupBy.
     builder = (builder
+               # Pin the clock used to turn unix TIMESTAMP into an hour of day.
+               # Unset, this defaults to the JVM's machine timezone, so the
+               # temporal buckets differed between a laptop (UTC+3) and the
+               # cluster (UTC) on identical data. See config.DATASET_TIMEZONE.
+               .config("spark.sql.session.timeZone", config.DATASET_TIMEZONE)
                .config("spark.sql.adaptive.enabled", "true")
                .config("spark.sql.adaptive.skewJoin.enabled", "true")
                .config("spark.sql.adaptive.coalescePartitions.enabled", "true"))

@@ -135,6 +135,24 @@ def dataset_paths(scale: str, resolution: int | None = None) -> dict:
 # GPS is sampled every 15 seconds (given by the dataset spec).
 GPS_INTERVAL_SEC = 15
 
+# The clock the data was generated on. TIMESTAMP is unix epoch, so turning it
+# into an HOUR OF DAY requires a timezone -- and Spark's `from_unixtime` uses
+# `spark.sql.session.timeZone`, which defaults to whatever the JVM's machine is
+# set to. Left unset, the temporal analysis silently answers a different
+# question on every machine:
+#
+#   MEASURED, same 1,614,508 trips, same code, same commit --
+#     laptop (Asia/Jerusalem, UTC+3)   morning_peak = 209,618 trips
+#     DataProc (UTC)                   morning_peak = 296,371 trips
+#
+#   Totals matched exactly; only the bucket ASSIGNMENT moved. The laptop's
+#   "morning peak 6-10" was really Porto's ~3-7 a.m.
+#
+# Porto is Europe/Lisbon. Pinning it here makes the buckets mean what the report
+# says they mean, and makes the result identical everywhere. spark_session
+# applies this in BOTH local and cloud mode.
+DATASET_TIMEZONE = os.environ.get("DATASET_TZ", "Europe/Lisbon")
+
 # !!! CRITICAL !!! POLYLINE points are [LONGITUDE, LATITUDE] (lon first).
 # Porto is around lon=-8.6, lat=41.15. Mixing this up flips the whole map.
 PORTO_LON_RANGE = (-8.75, -8.45)   # plausible longitude box for Porto metro
