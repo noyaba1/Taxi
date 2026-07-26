@@ -46,9 +46,30 @@ Methods A and the M7 sketches are expected to differ slightly and are reported,
 not failed: A samples trips and uses unseeded MinHash-LSH, and sketch merge order
 is partition-dependent.
 
-## Caveat on two reports
+## Two reports were regenerated after the run
 
-`temporal_analysis` and `method_comparison` in GCS were produced BEFORE two fixes
-landed (session timezone pinned to `Europe/Lisbon`; the cross-method support
-caveat). The corrected versions are the local ones under `outputs/statistics/`.
-Nothing else is affected — no other stage reads hour-of-day.
+`temporal_analysis` and `method_comparison` were first produced before two fixes
+landed, and were re-run on a fresh cluster against the same parquet afterwards:
+
+* **session timezone.** `F.hour(F.from_unixtime(...))` renders in
+  `spark.sql.session.timeZone`, which defaulted to the JVM's machine timezone.
+  The same 1,614,508 trips bucketed differently on a laptop (UTC+3) and on
+  DataProc (UTC) — totals identical, assignment shifted. Neither was Porto.
+  Pinned to `Europe/Lisbon` in `config.DATASET_TIMEZONE`. This changed the
+  report's *conclusion*, not just its numbers: mean overlap 0.78 -> 0.81 moved
+  the derived verdict from "an average with a real caveat" to "the corridors are
+  structural".
+* **cross-method support.** `top_support` was presented as comparable across
+  methods. B and D emit only maximal sub-routes; A and C do not, so A can report
+  a short frequent PREFIX that D suppresses as redundant. The report now says so
+  and shows the measurement.
+
+Re-run with:
+
+```bash
+ONLY="temporal_analysis.py evaluation.py" bash scripts/dataproc_submit.sh
+```
+
+`ONLY` restricts the submit list, so a corrected report costs one short cluster
+rather than the whole pipeline. No other stage reads hour-of-day, and no mining
+output changed.

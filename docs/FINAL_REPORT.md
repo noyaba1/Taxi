@@ -219,22 +219,47 @@ a regression test that a window may never span a GPS gap.
 
 ---
 
-## 7. Approximate vs exact (sample)
+## 7. Approximate vs exact (measured at two scales)
 
-| min_len | precision@100 | recall@100 | SS support MAE |
+Run at 5k and at 200k trips. The second scale was added specifically to test a
+claim this section used to make, and it falsified it.
+
+| min_len | recall@100 (5k) | **recall@100 (200k)** | rel. error (200k) |
 |---|---|---|---|
-| 1 km | 0.98 | 0.98 | 0.1 |
-| 3 km | 0.93 | 0.93 | 0.6 |
-| 5 km | 0.82 | 0.82 | 1.5 |
-| ≥10 km | ~0 | ~0 | — |
+| 1 km | 0.99 | **1.00** | 0.000 |
+| 3 km | 0.92 | **0.99** | 0.001 |
+| 5 km | 0.80 | **0.99** | 0.024 |
+| ≥10 km | 0.17 | **0.01** | 110.06 |
+| ≥20 km | 0.00 | **0.00** | 24.0 |
 
-Memory: **83.6 MB fixed** (sketch capacity) vs 275 MB estimated for the exact key
-table, and **8 sketch bundles** crossing the network vs 916,815 shuffled rows.
+Cost at 200k (33,597,872 window rows into the exact `groupBy`):
 
-The ≥10 km rows are a genuine sample artefact, not a sketch failure: at 4,745
-trips almost every route that long has support 1, so "top-100" is an arbitrary
-choice among thousands of ties and any two methods disagree. It resolves with
-scale, which is exactly what the mid/full runs are for.
+| | sketch | exact | ratio |
+|---|---|---|---|
+| time | 86.5 s | 89.0 s | ~1× |
+| memory | **66.3 MB** (fixed by capacity) | **6,986.6 MB** (14,627,639 keys) | **105× smaller** |
+
+**The case for the sketches is memory, and it strengthens with scale.** At 5k the
+memory ratio was only ~3×; at 200k it is 105×. Runtime is a wash — the sketch
+does not save time, it saves the key table. That is the honest form of the
+argument, and it needed two scales to make.
+
+### A claim this section used to make, now disproved
+
+It previously read: *"The ≥10 km rows are a genuine sample artefact, not a sketch
+failure… it resolves with scale."* It does not. Recall at ≥10 km went from 0.17
+at 5k to **0.01 at 200k** — worse, not better, with 40× the data.
+
+The reason is structural, not statistical. Space-Saving retains **heavy hitters**;
+a corridor is long *because* few trips repeat it, so long corridors sit in the
+tail by construction. Adding data adds more short frequent corridors that compete
+for the same retained slots, so long ones are evicted harder. No amount of extra
+data fixes this, because the sketch is answering "what is frequent?" and the
+deliverable asks "what is long *and* frequent?"
+
+This is why Method D carries the deliverable and the sketches do not: the exact
+suffix array finds a 26.25 km corridor with support 2, which a top-k sketch
+cannot see in principle.
 
 ---
 
@@ -423,20 +448,35 @@ roughly 4–5 minutes for the suffix array at full scale.
 ### "Popular" is only mildly time-dependent
 
 Corridors mined per hour-of-day bucket and compared with the all-time list
-(`temporal_analysis_mid.md`, cell-set Jaccard ≥ 0.5):
+(`temporal_analysis_full.md`, cell-set Jaccard ≥ 0.5), at the full 1.71M scale:
 
 | bucket | trips | overlap vs all-time |
 |---|---|---|
-| night | 32,911 | **0.68** |
-| morning peak | 23,872 | 0.79 |
-| evening | 31,851 | 0.78 |
-| evening peak | 40,861 | 0.80 |
-| midday | 59,266 | **0.87** |
+| night | 296,575 | **0.75** |
+| morning peak | 271,960 | 0.82 |
+| midday | 506,599 | **0.89** |
+| evening peak | 314,049 | 0.82 |
+| evening | 225,325 | 0.77 |
 
-Mean 0.78. A substantial core is shared — the road network, not demand, decides
-most of where taxis go — but **night is the least well represented**: about a
-third of night corridors do not appear in the all-time top-100. The static
-deliverable is a fair summary with a real caveat, not an artefact of averaging.
+Mean **0.81**. The corridors are **structural**: the same stretches dominate at
+03:00 and at 08:00, so it is the road network rather than time-varying demand
+that decides where taxis go. The all-time top-100 is a fair summary and not an
+artefact of averaging. Night remains the least well represented bucket, but at
+0.75 the gap is a caveat, not a refutation.
+
+**These numbers are a correction.** An earlier version of this table was computed
+on the wrong clock. `F.hour(F.from_unixtime(TIMESTAMP))` renders in
+`spark.sql.session.timeZone`, which defaults to the JVM's machine timezone and
+was never set — so the same 1,614,508 trips bucketed one way on a laptop
+(UTC+3) and another on DataProc (UTC), with identical totals and different
+assignments. Neither is Porto. `config.DATASET_TIMEZONE` now pins
+`Europe/Lisbon` and `spark_session` applies it in both local and cloud mode.
+
+The bug was worth the trouble it caused: because this section's verdict is
+*derived* from the computed mean rather than written by hand, the wrong clock
+produced a mean of 0.78 and the wrong conclusion — "a fair summary **with a real
+caveat**" instead of "structural". The report was arguing against its own
+headline deliverable, and only a cross-machine comparison exposed it.
 
 ---
 
@@ -457,6 +497,55 @@ laptop, `SPARK_SHUFFLE_PARTS=200`, 10 GB driver:
 
 The quadratic family (M5/M6/M8) is excluded at this scale by design; Method D
 carries their deliverable.
+
+### The same run, on a DataProc cluster
+
+The brief requires ≥5 machines reading from cloud storage. The identical code ran
+unchanged on **1 master + 5 workers** (`n2-standard-4`, image `2.2.84-debian12`,
+`europe-west1`), reading `gs://taxi-project-noyabayazi/taxi/raw/train.csv` and
+writing every parquet table and every report back to `gs://`. Nothing touched a
+local disk. Evidence captured while the cluster was alive is in
+`docs/cloud_evidence/`.
+
+**60 min wall, 50.5 min of job time.** Slower than the laptop's 33 min, which is
+worth stating rather than hiding: at 1.71M trips this problem still fits in one
+machine's memory, so distribution buys fault tolerance and headroom, not speed —
+the coordination and shuffle-over-network costs are real and the dataset is not
+big enough to amortise them.
+
+| stage | cluster | laptop |
+|---|---|---|
+| M7 sketches | 1044.5 s | 749.9 s |
+| M18 temporal | 629.0 s | 410.4 s |
+| M12 suffix array | 409.1 s | 409.4 s |
+| M9 clustering (A) | 293.6 s | 120.4 s |
+| M10 graph (C) | 213.9 s | 119.4 s |
+| Phase 4 encoding | 157.3 s | 58.8 s |
+
+M12 is the interesting row: the suffix array is the one stage that costs the same
+on both, because it is a single pass whose work is already partitioned by 3-cell
+prefix. The stages that got slower are the ones that shuffle.
+
+**Correctness.** `verify_cloud_run` compares the cluster against the local run in
+tiers, demanding equality only where the algorithm is deterministic:
+
+```
+trip count matches the baseline -> cloud=1,614,508 baseline=1,614,508
+Method D corridor set matches   -> cloud=420 baseline=420 shared=420
+Method D supports identical     -> 420 identical
+```
+
+420 corridors, bit-identical across a different machine count, a different
+partitioning and a different filesystem. Method D has no sampling, no seeds and
+no hash-order dependence, so identical output is evidence of identical input —
+the strongest correctness claim available here. Activity zones matched 50/50
+including PageRank floats; Phase-1 cleaning matched on all five rejection counts.
+Methods A and M7 differ slightly and are reported rather than failed: A samples
+trips and uses unseeded MinHash-LSH, and sketch merge order is
+partition-dependent.
+
+**Cost: $2.71** for the whole exercise — $1.77 for the graded run and $0.94 for
+the rehearsals that found the bugs described in §10.
 
 ### The scaling law was right
 
@@ -519,10 +608,30 @@ reaching for a cardinality sketch is an *unbounded* group, which this is not.
 
 ## 10. Honest limitations
 
-1. **The DataProc run has not been executed.** The full 1.71M pipeline HAS now
-   run end to end locally (§9d, 33 min), so the remaining gap is the cluster
-   itself: the storage layer is verified against a URI-scheme FileSystem
-   (`file://`, identical code path to `gs://`) but never against real GCS.
+1. **The DataProc run is done** (§9d) and verified against the local baseline.
+   What it cost to get there is worth recording, because every one of these was
+   invisible to local testing and none was a logic error:
+   * the cluster VMs have **no route to PyPI** (`[Errno 101] Network is
+     unreachable`). `gcloud` reports this as "initialization action timed out",
+     which sends you to the timeout. Dependencies are now staged as
+     platform-correct wheels in GCS and installed with `--no-index`.
+   * **the driver received none of its environment.** `spark.yarn.appMasterEnv`
+     reaches the driver only in *cluster* deploy mode; `gcloud dataproc jobs
+     submit` uses *client* mode. The run crashed on a temp-dir path — which was
+     luck, because the same gap left `OUTPUT_BASE` unset, and a run that got one
+     line further would have written every result to a disk that is deleted with
+     the cluster and exited 0. `storage.py` cannot catch that: it would be
+     correctly writing to a correctly-resolved local path. `spark_session` now
+     refuses to start a local-mode session on a node with `/etc/google-dataproc`.
+   * **a failed cluster is not rolled back.** DataProc parks it in state ERROR
+     with its VMs running so the logs can be read; the cleanup trap was armed on
+     the line *after* `clusters create`, so `set -e` aborted before it existed.
+     3 VMs billed unattended until deleted by hand.
+   * **the hour-of-day buckets were machine-dependent** (§9b) — found only
+     because the same code ran in two places.
+
+   The lesson is the one the storage boundary was built for, arriving through a
+   different door: the dangerous cloud failures are the ones that still exit 0.
 2. **The ≥40 km configuration is empty, and ≥20 km is hollow** (§9d). Both are
    findings rather than gaps, but they should be presented as such rather than
    as a top-100 list the reader will assume is meaningful.
