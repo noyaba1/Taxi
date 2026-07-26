@@ -28,6 +28,11 @@ DRY_RUN="${DRY_RUN:-0}"           # 1 = check everything, create and bill nothin
 # debian11, NOT debian12 -- `gcloud dataproc clusters create` rejects invalid
 # combinations, and the accepted list changes over time, hence the override.
 IMAGE="${IMAGE:-2.2-debian12}"
+# The init action pip-installs three packages on every node. The DEFAULT timeout
+# is 10 minutes, and python-geohash ships as an sdist only -- it compiles a C++
+# extension on each node -- so a cold pip resolve plus a build can exceed it and
+# the whole cluster creation is rolled back. 20m costs nothing when pip is fast.
+INIT_TIMEOUT="${INIT_TIMEOUT:-20m}"
 PREFIX="${PREFIX:-porto}"         # folder inside the bucket; "porto" is just the
                                   # city the dataset comes from. Cosmetic -- set
                                   # it to anything, or "" to use the bucket root.
@@ -119,6 +124,7 @@ gcloud dataproc clusters create "$CLUSTER" --region "$REGION" \
   --worker-machine-type n2-standard-4 --num-workers "$WORKERS" \
   --image-version "$IMAGE" --max-idle 30m \
   --initialization-actions "gs://goog-dataproc-initialization-actions-$REGION/python/pip-install.sh" \
+  --initialization-action-timeout "$INIT_TIMEOUT" \
   --metadata PIP_PACKAGES="h3==3.7.7 datasketches==5.0.2 python-geohash==0.8.5" \
   --properties spark:spark.sql.adaptive.enabled=true,spark:spark.sql.adaptive.skewJoin.enabled=true,spark:spark.sql.shuffle.partitions=400
 
