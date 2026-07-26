@@ -157,6 +157,30 @@ set `SCALE = 'full'`.
 
 ---
 
+## Step 4 — prove the run was correct
+
+"It finished without an error" is not evidence. A cluster can silently read a
+truncated input, lose a stage's output, or produce different numbers because the
+data partitioned differently.
+
+```bash
+gsutil -m cp -r "gs://<bucket>/porto/outputs" ./cloud_outputs
+python -m src.verify_cloud_run --cloud-dir ./cloud_outputs
+```
+
+It compares the cloud run against your **local full-scale run**, which is a
+known-good baseline on the same data and the same commit. The strongest check is
+Method D: the suffix array contains no randomness at all, so its corridors and
+supports are a function of the input alone — **if the cloud numbers differ, the
+cloud read different data.**
+
+Methods A and M7 are expected to differ (sampling, unseeded LSH hashes,
+partition-dependent sketch merge) and are reported as information, never as
+failures — demanding equality there would produce false alarms.
+
+Verified to catch: a stage's output never reaching GCS, a truncated input, and a
+corridor built across a GPS gap.
+
 ## Checks along the way
 
 | after | check |
