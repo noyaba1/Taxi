@@ -23,6 +23,11 @@ CLUSTER="${CLUSTER:-porto}"
 SCALE="${SCALE:---full}"          # --sample for a cheap cloud rehearsal first
 WORKERS="${WORKERS:-5}"           # the brief asks for >=5 machines in the cluster
 DRY_RUN="${DRY_RUN:-0}"           # 1 = check everything, create and bill nothing
+# Dataproc 2.2 = Spark 3.5.x + Python 3.11, which matches what this project was
+# validated against locally (pyspark 3.5.1 / Python 3.11). Note 2.1 pairs with
+# debian11, NOT debian12 -- `gcloud dataproc clusters create` rejects invalid
+# combinations, and the accepted list changes over time, hence the override.
+IMAGE="${IMAGE:-2.2-debian12}"
 PREFIX="${PREFIX:-porto}"         # folder inside the bucket; "porto" is just the
                                   # city the dataset comes from. Cosmetic -- set
                                   # it to anything, or "" to use the bucket root.
@@ -99,7 +104,7 @@ echo "== create cluster (1 master + $WORKERS workers) =="
 gcloud dataproc clusters create "$CLUSTER" --region "$REGION" \
   --master-machine-type n2-standard-4 --num-masters 1 \
   --worker-machine-type n2-standard-4 --num-workers "$WORKERS" \
-  --image-version 2.1-debian12 --max-idle 30m \
+  --image-version "$IMAGE" --max-idle 30m \
   --initialization-actions "gs://goog-dataproc-initialization-actions-$REGION/python/pip-install.sh" \
   --metadata PIP_PACKAGES="h3==3.7.7 datasketches==5.0.2 python-geohash==0.8.5" \
   --properties spark:spark.sql.adaptive.enabled=true,spark:spark.sql.adaptive.skewJoin.enabled=true,spark:spark.sql.shuffle.partitions=400
