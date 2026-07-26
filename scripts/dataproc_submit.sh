@@ -271,7 +271,13 @@ submit route_mining_approx.py --approx-only
 # O(n^2) support table. It is the ground truth the other methods are validated
 # against, and it belongs at sample scale only -- Method D reproduces its output
 # exactly, from a single pass, at a fraction of the cost.
-if [[ "$SCALE" != "--full" ]]; then
+# SAMPLE ONLY -- match run_pipeline.STAGES exactly, which lists these three as
+# scales=('sample',). Gating on `!= --full` (as this did) submitted them at
+# --mid / s400k / s800k too, where they are known to blow up: measured at 200k,
+# M5 OOMs and M8 spilled 21 GB without finishing. That made an intermediate-scale
+# cloud run cost money to fail on stages the local pipeline correctly skips.
+# CI does not catch this: it only asserts that every FULL-scale stage is present.
+if [[ "$SCALE" == "--sample" ]]; then
   submit route_mining_exact.py
   submit route_mining_closed.py
   submit route_mining_maximal.py
