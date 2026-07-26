@@ -154,6 +154,20 @@ fi
 gsutil -q cp scripts/init_offline_deps.sh "$DATA/scripts/init_offline_deps.sh"
 
 echo "== create cluster (1 master + $WORKERS workers) =="
+
+# Arm the cleanup BEFORE creating anything.
+#
+# MEASURED: a cluster whose initialization action fails is NOT rolled back.
+# Dataproc parks it in state ERROR *with its VMs still RUNNING* so you can read
+# the init logs. The failed run on 2026-07-26 left 3 x n2-standard-4 billing
+# until they were deleted by hand. This trap used to be installed on the line
+# AFTER `clusters create`, which is precisely the case it needed to cover:
+# `set -e` aborted the script before the trap ever existed.
+#
+# `delete` on a nonexistent cluster is a no-op error, hence the `|| true`.
+trap 'echo "== deleting cluster =="; \
+      gcloud dataproc clusters delete "$CLUSTER" --region "$REGION" -q || true' EXIT
+
 # h3 + datasketches are NOT on a stock DataProc image; install on every node,
 # from the GCS wheelhouse rather than PyPI (see above).
 # (numpy/pandas/pyarrow ARE preinstalled, so pandas_udf works out of the box.)
@@ -165,10 +179,6 @@ gcloud dataproc clusters create "$CLUSTER" --region "$REGION" \
   --initialization-action-timeout "$INIT_TIMEOUT" \
   --metadata WHEELHOUSE_URI="$WHEELHOUSE" \
   --properties spark:spark.sql.adaptive.enabled=true,spark:spark.sql.adaptive.skewJoin.enabled=true,spark:spark.sql.shuffle.partitions=400
-
-# Auto-delete the cluster on ANY exit (success, failure, Ctrl-C) -> budget-safe.
-# Safe to do unconditionally now that outputs live in GCS, not on the master.
-trap 'echo "== deleting cluster =="; gcloud dataproc clusters delete "$CLUSTER" --region "$REGION" -q' EXIT
 
 # Env for driver (appMaster) AND executors. OUTPUT_BASE is a gs:// path: every
 # report and CSV goes through src/storage.py, which writes to Hadoop FS when the
