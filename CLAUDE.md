@@ -42,9 +42,14 @@ Always use `.venv/bin/python`.
 .venv/bin/python -m src.validate_env                    # env gate
 .venv/bin/python -m src.make_sample --sample            # build a scale
 .venv/bin/python -m src.run_pipeline --sample --verify  # 16 stages + 9 verifiers
-.venv/bin/python -m pytest tests/ -q                    # 57 tests
+bash scripts/run_tests.sh                               # 60 tests (env gate first)
+bash scripts/run_tests.sh --fresh                       # rebuild .venv from the lock
 bash scripts/cloud_rehearsal.sh                         # URI-path dress rehearsal
 ```
+
+`requirements.txt` says what the project asks for and why; `requirements.lock.txt`
+is the resolved transitive closure, frozen from a venv built from scratch that ran
+the suite green. Neither can pin the JDK — `validate_env` is the gate that does.
 
 Scales: `--sample` (5k) · `--mid` (200k) · `--scale s400k|s800k` · `--full` (1.71M,
 ~33 min locally with `SPARK_SHUFFLE_PARTS=200 SPARK_DRIVER_MEM=10g`).
@@ -106,7 +111,10 @@ src/
   verify_*.py        one independent verifier per stage
 docs/    FINAL_REPORT (the graded write-up) · ARCHITECTURE · DATAPROC (canonical
          cloud doc; other run-books are marked superseded)
-scripts/ cloud_rehearsal.sh (free) · dataproc_submit.sh (has DRY_RUN=1)
+scripts/ run_tests.sh · cloud_rehearsal.sh (free) · dataproc_submit.sh (DRY_RUN=1)
+tests/   test_pure_functions (no JVM) · test_storage + test_method_a_spark
+         (each starts a real SparkSession — if they SKIP, the JDK is missing and
+         the checks that matter most did not run)
 ```
 
 ## The four methods

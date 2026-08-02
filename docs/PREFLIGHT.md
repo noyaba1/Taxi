@@ -56,7 +56,7 @@ python -m src.make_sample 5000
 python -m src.run_pipeline --sample --verify
 python -m pytest tests/ -q
 ```
-- [ ] `run_pipeline` prints `OK` for every stage + every verifier `PASSED`; 57 tests pass.
+- [ ] `run_pipeline` prints `OK` for every stage + every verifier `PASSED`; 60 tests pass.
 
 > If A4 is green, the code is correct end-to-end. The cloud run only changes SCALE
 > and STORAGE, both already wired. Proceed to spend budget.

@@ -742,7 +742,7 @@ reaching for a cardinality sketch is an *unbounded* group, which this is not.
 .venv/bin/python -m src.validate_env
 .venv/bin/python -m src.make_sample --sample
 .venv/bin/python -m src.run_pipeline --sample --verify   # 16 stages + 9 verifiers
-.venv/bin/python -m pytest tests/ -q                     # 57 tests
+.venv/bin/python -m pytest tests/ -q                     # 60 tests
 
 .venv/bin/python -m src.make_sample --mid                # 200k
 .venv/bin/python -m src.run_pipeline --mid               # scale behaviour
