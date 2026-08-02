@@ -39,7 +39,7 @@ See [SETUP.md](SETUP.md) for the full environment (Java 17, Python 3.11).
 ```bash
 .venv/bin/python -m src.validate_env                    # env gate
 .venv/bin/python -m src.make_sample --sample            # 5,000 trips
-.venv/bin/python -m src.run_pipeline --sample --verify  # 14 stages + 9 verifiers
+.venv/bin/python -m src.run_pipeline --sample --verify  # 16 stages + 9 verifiers
 .venv/bin/python -m pytest tests/ -q                    # 56 unit tests
 ```
 

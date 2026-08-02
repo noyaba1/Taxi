@@ -1,5 +1,11 @@
 # Submission & DataProc Readiness Report
 
+> ⚠️ **Historical.** This records the state *before* the cloud run, which has
+> since been executed (2026-07-26). It is kept because the dry runs described
+> here found two real bugs, and that record is worth having. For current results
+> read [`FINAL_REPORT.md`](FINAL_REPORT.md) §9d; for the canonical cloud
+> procedure read [`DATAPROC.md`](DATAPROC.md).
+
 Prepared before spending the $50 cloud budget. Scope: verify docs against code,
 harden for scale, and run the largest safe local execution. **No new algorithms;
 no architecture changes.**
@@ -31,7 +37,7 @@ no architecture changes.**
 ## 3. What was verified
 
 - **All 9 verifiers PASS at 50k** (route-mining, suffix, approx, maximal,
-  clustering, graph, anomaly) + **11 unit tests** green.
+  clustering, graph, anomaly) + **57 unit tests** green.
 - **M5/M7 confirmed to 100k**: exact mining 108 s (9.6M→19M windows, no OOM);
   approx 208 s with the `treeReduce` fix holding at 96 partitions.
 - **Approximate method's scaling advantage demonstrated**: memory ratio grew from

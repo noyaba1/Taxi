@@ -98,20 +98,28 @@ def star_cluster(edges, min_size):
 
 
 # ------------------------------------------------- shared sub-route extraction
-def run_in_at_least(sequences, h, k):
+def run_in_at_least(members, h, k):
     """
     Longest-first helper: the most widely shared contiguous run of length `h`
-    present in at least `k` of `sequences`, or None.
+    present in at least `k` of `members`, or None.
     Returns (run_tuple, n_members_containing).
+
+    A member is a LIST OF SEGMENTS, not a sequence: a trip whose trace has GPS
+    gaps is split into several gap-free stretches, and all of them belong to the
+    one trip. The dedupe set is therefore per MEMBER and spans its segments, so a
+    trip that was split three ways still contributes at most 1 to the count.
+    Deduping per segment instead let one trip clear a "60% of members" threshold
+    by itself.
     """
     counts: dict = {}
-    for seq in sequences:
+    for segments in members:
         seen = set()
-        for i in range(len(seq) - h + 1):
-            w = tuple(seq[i:i + h])
-            if w not in seen:            # count MEMBERS, not occurrences
-                seen.add(w)
-                counts[w] = counts.get(w, 0) + 1
+        for seq in segments:
+            for i in range(len(seq) - h + 1):
+                w = tuple(seq[i:i + h])
+                if w not in seen:        # count MEMBERS, not occurrences
+                    seen.add(w)
+                    counts[w] = counts.get(w, 0) + 1
     best = None
     for w, c in counts.items():
         if c >= k and (best is None or c > best[1] or (c == best[1] and w < best[0])):
@@ -119,21 +127,29 @@ def run_in_at_least(sequences, h, k):
     return best
 
 
-def longest_shared_run(sequences, min_members):
+def longest_shared_run(members, min_members):
     """
-    The longest contiguous cell run contained in >= `min_members` sequences.
+    The longest contiguous cell run contained in >= `min_members` MEMBERS.
+
+    `members` is one entry per cluster member (per trip), each entry a list of
+    that member's gap-free segments. A bare sequence is accepted as a member with
+    a single segment, so the callers in the tests read naturally.
 
     Binary search on length is valid because the property is monotone: if a run
-    of length h is in k sequences, each of its length-(h-1) sub-runs is in at
+    of length h is in k members, each of its length-(h-1) sub-runs is in at
     least k as well. So we probe O(log max_len) lengths instead of all of them.
     """
-    sequences = [s for s in sequences if s]
-    if not sequences:
+    members = [[m] if m and isinstance(m[0], str) else m for m in members]
+    members = [[s for s in segs if s] for segs in members]
+    members = [segs for segs in members if segs]
+    if not members:
         return None
-    lo, hi, best = 1, max(len(s) for s in sequences), None
+    lo = 1
+    hi = max(len(s) for segs in members for s in segs)
+    best = None
     while lo <= hi:
         mid = (lo + hi) // 2
-        found = run_in_at_least(sequences, mid, min_members)
+        found = run_in_at_least(members, mid, min_members)
         if found:
             best, lo = found, mid + 1
         else:
@@ -229,13 +245,15 @@ def discover(spark, scale: str):
         import pandas as pd
 
         cid = int(pdf["cid"].iloc[0])
-        seqs = []
-        for seq in pdf["h3_seq_compact"]:
-            # Only gap-free stretches can host a shared corridor.
-            seqs.extend(cells_mod.split_at_gaps(list(seq)))
+        # One entry PER TRIP, holding that trip's gap-free stretches -- only such
+        # a stretch can host a shared corridor, but all of them are still the one
+        # trip. Flattening them into a single list made `need` a segment count on
+        # one side and a trip count on the other.
+        members = [cells_mod.split_at_gaps(list(seq))
+                   for seq in pdf["h3_seq_compact"]]
         size = len(pdf)
         need = max(2, math.ceil(pct * size))
-        best = longest_shared_run(seqs, need)
+        best = longest_shared_run(members, need)
         if not best:
             return pd.DataFrame(columns=run_schema.fieldNames())
         run, n_with = best

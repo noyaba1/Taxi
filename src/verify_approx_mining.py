@@ -58,10 +58,16 @@ def main(scale: str) -> None:
     # --- 1. structural: non-negative estimates + thresholds respected ---
     neg = [r for r in approx if min(float(r["ss_estimate"]), float(r["ss_lb"]),
                                     float(r["cms_estimate"])) < 0]
-    bad_len = [r for r in approx if r["length_km"] and float(r["length_km"]) < float(r["min_len_km"])]
-    c1 = not neg and not bad_len
+    # length_km is recomputed from the sub-route key, so it is populated in
+    # --approx-only too. An empty one used to be tolerated here, which is how the
+    # mode that runs at mid and full scale shipped a blank length on every row.
+    missing_len = [r for r in approx if not r["length_km"]]
+    bad_len = [r for r in approx
+               if r["length_km"] and float(r["length_km"]) < float(r["min_len_km"])]
+    c1 = not neg and not bad_len and not missing_len
     ok &= c1
     print(f"[{'OK' if c1 else 'FAIL'}] non-negative estimates ({len(neg)} bad), "
+          f"length present ({len(missing_len)} empty), "
           f"length>=min_len ({len(bad_len)} bad)")
 
     # --- 2. Count-Min never underestimates (all rows with a known exact support) ---

@@ -135,6 +135,13 @@ def dataset_paths(scale: str, resolution: int | None = None) -> dict:
 # GPS is sampled every 15 seconds (given by the dataset spec).
 GPS_INTERVAL_SEC = 15
 
+# The Porto fleet: 442 taxis over 2013-2014, fixed by the dataset. This is a
+# CEILING, not a tuning knob -- no group of trips can contain more distinct
+# vehicles than exist. It is what makes a distinct-count sketch pointless here
+# (see the HyperLogLog result in route_mining_graph), and it is the bound the
+# cloud verifier holds `distinct_taxis` against.
+FLEET_SIZE = 442
+
 # The clock the data was generated on. TIMESTAMP is unix epoch, so turning it
 # into an HOUR OF DAY requires a timezone -- and Spark's `from_unixtime` uses
 # `spark.sql.session.timeZone`, which defaults to whatever the JVM's machine is

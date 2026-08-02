@@ -58,6 +58,52 @@ makes cross-method comparison meaningful.
 
 ---
 
+## 2b. What "popular long sub-route" means here, exactly
+
+Every method answers the same question, and the question has more degrees of
+freedom than the phrase does. This is the operative definition; it is not
+re-litigated per method.
+
+| decision | this project | why |
+|---|---|---|
+| unit | a **contiguous** cell substring | a route with holes means the taxi teleported; see DESIGN_REVIEW §5 |
+| support | **distinct trips** containing it, deduped within a trip | a trip driving a loop twice is one trip's worth of evidence |
+| direction | **matters** — A→B and B→A are different routes | shingles are directed bigrams; the graph is directed |
+| deviation | same route iff the **same H3 res-9 cells**, in order | resolution *is* the tolerance: ~174 m edge (§8) |
+| length | Haversine between cell **centres**, gap-split first | §6, and the hop guard that makes it trustworthy |
+| maximality | required for **B and D**, not for A and C | why `top_support` is not comparable across methods — §3 |
+| second signal | **`support_taxis`**, distinct vehicles | 442 taxis total, so trips ≠ drivers — §9c |
+
+**Ranking policy — the one the deliverable answers.** Two readings of "top-100
+popular long sub-routes at ≥ L km" are defensible:
+
+1. *(used)* among all sub-routes of length ≥ L, the **100 most popular**, ties
+   broken by length — `orderBy(support desc, length_km desc)` in every miner.
+2. among all sub-routes clearing the support floor, the **100 longest**.
+
+Reading 1 is the primary answer, because "popular" is the noun the brief ranks on
+and "long" is stated as a *minimum* (≥ L), which is a filter, not an objective.
+
+Reading 2 is answered too, in the **support-floor sweep** that
+`route_mining_suffix_array.py` publishes alongside the deliverable: for each
+floor it reports the longest maximal route clearing it — `max(length_km)` over
+the whole qualifying set, not over the top-100 cut. That is literally "the
+longest route above the popularity threshold", swept across thresholds instead of
+fixed at one. Read the two together: reading 1 gives the graded list, the sweep
+gives the length/strictness frontier, and §9d shows where they diverge — at
+≥20 km, where the longest qualifying route (26.25 km) is 2 trips from one taxi.
+
+Note the `longest_km` column in the per-band tables is the longest route *within
+the top-100 by support*, not the global longest above the floor; those coincide
+only when a band holds fewer than 100 routes.
+
+**"Popular" is a claim about drivers, not only trips.** A corridor clearing the
+floor on two trips from one vehicle is *frequent under the configured floor* and
+is not an operationally popular city route. The two are separated by the
+`support_taxis` column and reported separately — §9c and §9d.
+
+---
+
 ## 3. The four methods (sample scale, ≥3 km config)
 
 | | approach | routes | top support | longest |
@@ -68,7 +114,22 @@ makes cross-method comparison meaningful.
 | **D** suffix array | generalised suffix array + LCP intervals | 95 | 60 | 5.05 km |
 
 All four report the same unit — a contiguous sub-route with a distinct-trip
-support — so these columns are directly comparable.
+support — so `routes` and `longest` are directly comparable.
+
+**`top support` is not.** The difference is definitional, not a defect. B and D
+emit only *maximal* sub-routes: a route is reported only if no one-cell extension
+is itself frequent. A and C have no such constraint, so they can report a short,
+very common **prefix** of a longer corridor — exactly what B and D suppress as
+redundant. Measured at ≥1 km on the full run: A's top route (4 cells, 1.10 km)
+is contained in 79,952 trips and its best one-cell extension in 64,936, still far
+above the band's floor; it is therefore not maximal, D omits it, and D's 14,330
+describes a route that *cannot* be extended. Both counts are exact and they answer
+different questions. **Read `top support` down a method's column, never across.**
+
+`evaluation.py` states this in the generated `method_comparison_*.md`. This
+section previously claimed the opposite and was not updated when the generator
+was corrected — a report contradicting the pipeline that produced it, which is
+the one thing this project treats as a defect in its own right.
 
 ### Cross-method agreement (≥3 km, cell-set Jaccard ≥ 0.5)
 
@@ -653,6 +714,25 @@ reaching for a cardinality sketch is an *unbounded* group, which this is not.
    different (prediction) task and remain out of scope.
 8. **The suffix array truncates suffixes at 200 cells** (~60 km), matching the
    window cap. Corridors longer than that are out of scope by construction.
+9. **Method A's published numbers predate a counting fix and have not been
+   re-measured.** Inside a cluster, the "shared by ≥60% of members" test compared
+   a *segment* count against a *trip* count: a trip split at GPS gaps entered the
+   candidate list once per gap-free stretch, so a single trip could satisfy the
+   threshold several times over. Fixed — one entry per trip, deduped across its
+   own segments — but every Method A figure in §3, §9b and §9d was produced by
+   the old code and is **stale until `route_mining_clustering` is re-run**. The
+   effect is bounded and one-directional: only gap-split trips were ever
+   over-counted, and the reported `support` was always recounted globally by
+   containment over all trips, so `support` was never wrong — what could be wrong
+   is *which* run a cluster selected, and its `members_with_run`. Anything else
+   would be a guess; it is not stated here until it is measured.
+10. **The M7 sketch output before this round carried no route length in
+   `--approx-only` mode** — the mode that runs at mid and full scale. Length was
+   read from the exact aggregate that `--approx-only` exists to skip, so every
+   row shipped a blank `length_km`, the one column the deliverable is filtered
+   on. It is now recomputed from the sub-route key itself (exact, same function
+   that produced it), and both `verify_approx_mining` and `verify_cloud_run` now
+   fail on a blank length rather than skipping it.
 
 ---
 
@@ -661,8 +741,8 @@ reaching for a cardinality sketch is an *unbounded* group, which this is not.
 ```bash
 .venv/bin/python -m src.validate_env
 .venv/bin/python -m src.make_sample --sample
-.venv/bin/python -m src.run_pipeline --sample --verify   # 14 stages + 9 verifiers
-.venv/bin/python -m pytest tests/ -q                     # 36 tests
+.venv/bin/python -m src.run_pipeline --sample --verify   # 16 stages + 9 verifiers
+.venv/bin/python -m pytest tests/ -q                     # 57 tests
 
 .venv/bin/python -m src.make_sample --mid                # 200k
 .venv/bin/python -m src.run_pipeline --mid               # scale behaviour

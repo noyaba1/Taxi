@@ -42,7 +42,7 @@ Always use `.venv/bin/python`.
 .venv/bin/python -m src.validate_env                    # env gate
 .venv/bin/python -m src.make_sample --sample            # build a scale
 .venv/bin/python -m src.run_pipeline --sample --verify  # 16 stages + 9 verifiers
-.venv/bin/python -m pytest tests/ -q                    # 56 tests
+.venv/bin/python -m pytest tests/ -q                    # 57 tests
 bash scripts/cloud_rehearsal.sh                         # URI-path dress rehearsal
 ```
 
@@ -137,12 +137,27 @@ matches.
 - **No Bloom filter.** It is on the brief's list but nothing here would earn it;
   saying why is worth more than the checkbox.
 
+## Done, and where the proof is
+
+The DataProc run **has happened** (2026-07-26): 1 master + 5 workers, 1.71M trips,
+every input and output on `gs://`, 60 min, $2.71. Method D reproduced 420/420
+corridors bit-identically against the local baseline. Results in FINAL_REPORT §9d,
+proof in `docs/cloud_evidence/`. The presentation deck (`scripts/build_deck.py`)
+and the `.docx` developer guide are built. Do not re-plan any of this.
+
 ## Still outstanding
 
-1. **The DataProc run** — the brief requires ≥5 machines reading GCS. `gs://` is
-   the one component never tested; `file://` stands in everywhere else.
-   Order: `cloud_rehearsal.sh` → `DRY_RUN=1` → `SCALE=--sample WORKERS=2` → full.
-2. **Presentation-form comparison** (`בצורה מצגת`) — the group's to build.
+1. **Two re-runs that supersede stale numbers.** Both landed after the graded run,
+   so the published figures predate them (FINAL_REPORT §10.9, §10.10):
+   * **Method A** — the cluster-internal "≥60% of members" test compared a
+     *segment* count to a *trip* count, so a gap-split trip could clear it alone.
+     Fixed; A's extents are stale until re-measured. `support` was never affected.
+   * **M7 `--approx-only`** — every row shipped a blank `length_km`. Fixed by
+     recomputing from the sub-route key.
+
+   `ONLY="route_mining_clustering.py route_mining_approx.py"` re-runs just these.
+2. **A `results/` bundle.** `outputs/` is gitignored, so the archive contains no
+   route tables at all — nothing in it is reproducible without bucket access.
 3. **Moodle submission** — one student submits, links all members.
 
 `gcloud`/`gsutil` are denied in `.claude/settings.json` on purpose: the cloud run

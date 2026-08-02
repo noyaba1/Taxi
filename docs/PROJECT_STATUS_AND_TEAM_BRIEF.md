@@ -1,8 +1,15 @@
 # Project Status & Team Brief
 
+> ⚠️ **Partly historical. The DataProc run described below as "next" has been
+> executed** — 1 master + 5 workers, 1.71M trips, all I/O on `gs://`, 2026-07-26.
+> For current state read [`FINAL_REPORT.md`](FINAL_REPORT.md) §9d (results) and
+> [`cloud_evidence/`](cloud_evidence/) (proof); **where this file disagrees with
+> those, they win.** §1–§5 below are still accurate as orientation; §6 has been
+> updated to what actually remains.
+
 For the whole team. If you have not followed the work closely, read this first — it
-explains what the project is, what is done, and what happens next (the DataProc
-run). Everything is on branch **`Noya`**.
+explains what the project is, what is done, and what happens next. Everything is
+on branch **`Noya`**.
 
 ---
 
@@ -51,7 +58,7 @@ with an independent `verify_*.py` checker.
 | **Approximate** | Space-Saving + Count-Min vs exact | scale + the approximate-algorithms requirement | ✅ | `approx_top100` + memory/accuracy metrics |
 | **Anomaly detection** | 5 detectors (speed/idle/distance/shape/drift) | the "anomalous routes" requirement | ✅ | `anomalies_top50` |
 | **Visualization** | Folium map + Colab notebook | the map demo | ✅ | `porto_map_*.html`, notebook |
-| **Validation** | a `verify_*` per stage + 11 unit tests | prove correctness independently | ✅ | all PASS at 50k |
+| **Validation** | a `verify_*` per stage + 57 unit tests | prove correctness independently | ✅ | all PASS at 50k |
 | **Release audit** | per-stage release review | catch cloud failures before they cost money | ✅ | `RELEASE_AUDIT.md` |
 | **Pre-flight** | local gate + dry runs (50k/100k) | budget protection; found & fixed 2 real bugs | ✅ | `PREFLIGHT.md`, `READINESS_REPORT.md` |
 | **Documentation** | design, cloud runbooks, monitoring, workbook | run the cloud step without guessing | ✅ | see §5 |
@@ -79,19 +86,34 @@ with an independent `verify_*.py` checker.
 
 ## 6. What remains before submission
 
-### Before / during the DataProc run
-1. **Verify local pre-flight** — `PREFLIGHT §A` green (`run_pipeline --sample --verify` + tests).
-2. **Run DataProc** — follow `CLOUD_RUN_PLAYBOOK.md`; canary `clean_data` first.
-3. **Collect runtime metrics** — into `DATAPROC_RESULTS_TEMPLATE.md`.
-4. **Save Spark UI screenshots** — per `LIVE_MONITORING_GUIDE.md` (cluster, shuffle, executors, results).
+### Done (was "next" in the original version of this file)
+- ✅ **DataProc run** — 1 master + 5 workers, `n2-standard-4`, image `2.2.84-debian12`,
+  1,710,670 trips, every input and output on `gs://`. 60 min wall, $2.71 total.
+- ✅ **Runtime metrics + results in `FINAL_REPORT.md` §9d** — measured, not estimated.
+- ✅ **Cloud correctness verified** — `verify_cloud_run`; Method D reproduced
+  420/420 corridors bit-identically against the local full-scale baseline.
+- ✅ **Presentation** — `scripts/build_deck.py` → 27-slide deck, every figure read
+  from the generated reports rather than retyped.
+- ✅ **Developer guide** — `scripts/build_devdoc.py` → `.docx`.
 
-### After the DataProc run
-5. **Fill `DATAPROC_RESULTS_TEMPLATE.md`** with the real numbers.
-6. **Update `FINAL_REPORT.md`** — replace estimates with measured full-scale results.
-7. **Prepare the presentation** — comparison, maps, approximate-vs-exact story.
-8. **Prepare the final submission** + **final QA** (re-read everything, re-run verifiers on cloud outputs).
+### Actually remaining
+1. **Re-run Method A (`route_mining_clustering`)** — a cluster-internal counting
+   fix landed after the graded run (FINAL_REPORT §10.9): gap-split trips could
+   satisfy the "≥60% of members" test more than once. `support` was never
+   affected (it is recounted globally), but Method A's published extents are
+   stale until re-measured. Cheapest path: `ONLY="route_mining_clustering.py"
+   bash scripts/dataproc_submit.sh`, or a local `--full` run.
+2. **Re-run M7 at mid/full** to pick up populated `length_km` in `--approx-only`
+   output (§10.10). Both re-runs can share one short cluster.
+3. **Ship a `results/` bundle** — `outputs/` is gitignored, so the archive
+   currently contains no route tables. A reviewer cannot reproduce a single
+   number without bucket access. Keep the top-route CSVs + summary reports.
+4. **Moodle submission** — one student submits and links all members.
 
-## 7. What to expect during the cloud execution
+## 7. How a cloud execution runs
+
+Written before the first run and kept, because §6's two re-runs follow the same
+procedure — shorter, since only one or two stages are submitted.
 
 - **Roles:** one person drives (`gcloud`/Cloud Shell + playbook), one watches the
   **Spark UI** (monitoring guide), one records numbers in the **workbook**.
@@ -106,5 +128,6 @@ with an independent `verify_*.py` checker.
 - **Golden rules:** run the **canary** first; **delete the cluster** the moment the
   last job finishes; read results from the job driver output; record everything.
 
-**Bottom line:** the code and docs are ready. The next action is the first DataProc
-run, following `PREFLIGHT.md` → `CLOUD_RUN_PLAYBOOK.md`, recording into the workbook.
+**Bottom line:** the pipeline has run end to end on DataProc and the results are
+in `FINAL_REPORT.md` §9d. What is left is §6's four items — two re-runs that
+supersede stale Method A / M7 numbers, the results bundle, and the submission.

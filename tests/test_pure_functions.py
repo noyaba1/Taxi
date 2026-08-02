@@ -236,6 +236,23 @@ def test_longest_shared_run_handles_empty():
     assert longest_shared_run([[], []], 2) is None
 
 
+def test_one_gap_split_trip_cannot_satisfy_the_member_threshold_alone():
+    """
+    A trip broken at GPS gaps yields several segments, but it is still ONE
+    member. When the segments were flattened into the candidate list, a single
+    trip carrying the run in three of its stretches counted as three members and
+    could clear a threshold no other trip contributed to.
+    """
+    corridor = list("cdefg")
+    one_trip_three_segments = [corridor, corridor, corridor]
+    assert longest_shared_run([one_trip_three_segments], min_members=3) is None
+
+    # ...and it is found the moment three distinct members really do share it.
+    three_trips = [[corridor], [corridor], [corridor]]
+    run, n = longest_shared_run(three_trips, min_members=3)
+    assert list(run) == corridor and n == 3
+
+
 # ---------------- min-support arithmetic ----------------
 def test_min_support_floors_at_two():
     assert min_support_for(0.0001, 100) == 2

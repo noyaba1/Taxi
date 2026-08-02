@@ -31,8 +31,9 @@ from datetime import datetime, timezone
 
 from pyspark.sql import functions as F
 
+from src import cells as cells_mod
 from src import cli, config, storage
-from src.route_mining_exact import emit_windows
+from src.route_mining_exact import DELIM, emit_windows
 from src.spark_session import get_spark
 
 log = cli.setup_logging("m7")
@@ -135,6 +136,26 @@ def _mean(xs):
     return sum(xs) / len(xs) if xs else 0.0
 
 
+def _n_cells(key):
+    return len(key.split(DELIM))
+
+
+def _length_of(key):
+    """
+    Ground length of a sub-route, recomputed from its own key.
+
+    The sketches store keys and nothing else, so length used to be looked up in
+    the exact aggregate -- which `--approx-only` deliberately never builds. Every
+    row it wrote therefore carried an EMPTY length_km, i.e. the mode that runs at
+    mid and full scale produced the one column the deliverable is filtered on.
+
+    The key is the DELIM-joined cell path, so the length is recoverable from the
+    key alone by the same function that produced it in `emit_windows` -- exact,
+    not an estimate, and driver-side over at most TOP_K x |THRESHOLDS| keys.
+    """
+    return cells_mod.path_length_km(key.split(DELIM))
+
+
 def main(scale: str, approx_only: bool) -> None:
     spark = get_spark("route-mining-approx")
     paths = config.dataset_paths(scale)
@@ -217,14 +238,14 @@ def main(scale: str, approx_only: bool) -> None:
             a = cand[L][:TOP_K]
             ss_ae, ss_re, cms_ae = [], [], []
             for rank, (k, est, lb, ub) in enumerate(a, 1):
-                ex_sup, ex_len = (info or {}).get(k, (None, None))
+                ex_sup, _ = (info or {}).get(k, (None, None))
                 if ex_sup:
                     ss_ae.append(abs(est - ex_sup))
                     ss_re.append(abs(est - ex_sup) / ex_sup)
                     cms_ae.append(abs(cm.get_estimate(k) - ex_sup))
                 csv_rows.append((L, rank, est, lb, ub, cm.get_estimate(k),
                                  ex_sup if ex_sup is not None else "",
-                                 round(ex_len, 3) if ex_len is not None else "", k))
+                                 round(_length_of(k), 3), _n_cells(k), k))
             if not approx_only:
                 a_set = {k for (k, *_1) in a}
                 e_set = set(exact_top[L])
@@ -238,7 +259,7 @@ def main(scale: str, approx_only: bool) -> None:
         csv_path = storage.write_csv(
             storage.out_path("routes", f"approx_top100_{scale}.csv"),
             ["min_len_km", "rank", "ss_estimate", "ss_lb", "ss_ub", "cms_estimate",
-             "exact_support", "length_km", "subroute"],
+             "exact_support", "length_km", "n_cells", "subroute"],
             csv_rows)
         rp = storage.write_lines(
             storage.out_path("statistics", f"m7_approx_mining_{scale}.md"), rep)
