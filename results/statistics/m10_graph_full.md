@@ -1,5 +1,5 @@
 # M10 Method C: Transition Graph (full)
-_generated: 2026-08-04T03:43:29+00:00_
+_generated: 2026-08-04T06:53:17+00:00_
 
 trips: 1,614,508 | nodes: 4,982 | edges: 17,438 | frequent edges: 12,212 | heavy paths validated: 1,545
 
@@ -41,9 +41,9 @@ The table is kept because a negative result measured is worth more than a positi
 | metric | value |
 |---|---|
 | cells measured | 4,982 |
-| HLL time | 12.2s |
-| exact `countDistinct` time | 3.6s |
-| HLL time / exact time | 3.44x |
+| HLL time | 12.0s |
+| exact `countDistinct` time | 1.6s |
+| HLL time / exact time | 7.26x |
 | mean relative error | 1.263% |
 | worst absolute error | 20 taxis |
 

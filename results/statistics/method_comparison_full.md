@@ -31,22 +31,22 @@ Measured on this dataset at `>=1 km`: A's top route (4 cells, 1.10 km) is contai
 | D | 20 | 100 | 156 | 25.83 |
 | A | 40 | 0 | - | - |
 | C | 40 | 0 | - | - |
-| D | 40 | 10 | 2 | 43.99 |
+| D | 40 | 0 | - | - |
 
 ## Cost per stage (measured this run)
 | stage | wall_s | peak_rss_mb | rows_in | rows_out | shuffle_records |
 |---|---|---|---|---|---|
-| m7_approx | 1350.0 | 1419.9 | - | - | 387,000,554 |
-| m18_temporal | 493.6 | 338.2 | 1,614,508 | - | - |
-| m9_clustering | 283.3 | 351.1 | 49,929 | 3,309 | 423,629 |
-| m12_suffix_array | 271.8 | 331.8 | 1,614,508 | 5,447,275 | 27,033,877 |
-| m10_graph | 228.3 | 326.9 | 1,614,508 | - | 17,438 |
-| m3_encoding | 184.2 | 344.5 | 1,663,886 | 1,614,508 | - |
-| p1_clean | 94.1 | 330.7 | 1,710,670 | 1,663,886 | - |
-| p2_features | 80.4 | 350.7 | 1,663,886 | 1,663,886 | - |
-| m11_anomalies | 37.3 | 322.4 | 1,663,886 | - | - |
-| m1_summary | 34.4 | 327.9 | 1,663,886 | 1,663,886 | - |
-| holdout_validation | 10.9 | 328.2 | - | - | - |
+| m7_approx | 1342.2 | 1419.7 | - | - | 387,000,554 |
+| m18_temporal | 450.0 | 326.1 | 1,614,508 | - | - |
+| m12_suffix_array | 373.1 | 354.6 | 1,614,508 | 5,107,086 | 27,033,877 |
+| m9_clustering | 347.0 | 348.4 | 49,929 | 3,309 | 423,629 |
+| m10_graph | 236.2 | 349.8 | 1,614,508 | - | 17,438 |
+| m3_encoding | 179.3 | 337.2 | 1,663,886 | 1,614,508 | - |
+| p1_clean | 102.2 | 332.7 | 1,710,670 | 1,663,886 | - |
+| p2_features | 86.0 | 341.4 | 1,663,886 | 1,663,886 | - |
+| m11_anomalies | 47.7 | 351.5 | 1,663,886 | - | - |
+| m1_summary | 33.6 | 332.2 | 1,663,886 | 1,663,886 | - |
+| holdout_validation | 10.9 | 328.9 | - | - | - |
 
 ## Cross-method overlap at >=3 km
 Fraction of the ROW method's routes with a cell-set Jaccard>=0.5 match in the COLUMN method.
@@ -68,7 +68,6 @@ Fraction of the ROW method's routes with a cell-set Jaccard>=0.5 match in the CO
 | 5 | 100 | 8.19 | 21.40 | 0 |
 | 10 | 100 | 3.17 | 7.41 | 0 |
 | 20 | 100 | 1.62 | 10.22 | 0 |
-| 40 | 10 | 2.00 | 2.00 | 10 |
 
 Least-diverse corridor at each length:
 
@@ -77,7 +76,6 @@ Least-diverse corridor at each length:
 - `>=5 km`: 4408 trips but only **206 taxi(s)** over 5.82 km — 21.4 trips per vehicle.
 - `>=10 km`: 652 trips but only **88 taxi(s)** over 11.27 km — 7.4 trips per vehicle.
 - `>=20 km`: 92 trips but only **9 taxi(s)** over 22.16 km — 10.2 trips per vehicle.
-- `>=40 km`: 2 trips but only **1 taxi(s)** over 43.99 km — 2.0 trips per vehicle.
 
 A ratio near 1.0 means almost every trip came from a different vehicle: genuinely public. A high ratio marks a route that the trip-support deliverable would rank as popular and a passenger would not recognise as one.
 

@@ -1,7 +1,9 @@
 # Results bundle — Porto Taxi, full scale (1,710,670 trips)
 
-Produced by the DataProc run of 2026-08-04 (`gs://taxi-project-noyabayazi/taxi`),
-1 master + {2,5,10,16} `n2-standard-4` workers, `europe-west1`.
+Produced by the DataProc runs of 2026-08-04 (`gs://taxi-project-noyabayazi/taxi`),
+1 master + 5 `n2-standard-4` workers in `europe-west1` (cluster `porto-final`,
+completed by `porto-final2`; live evidence in `docs/cloud_evidence/*_20260804.*`).
+The 2/5/10/16-worker sweep behind the scaling study is a separate set of runs.
 
 ## Route tables (`routes/`)
 
@@ -29,13 +31,19 @@ table that OOMs at 200k. Method D reproduces its output exactly in one pass.
 | 20 km | 1 | 0 | 100 |
 | 40 km | 0 | 0 | **0** |
 
+All four methods, including the sketch-based M7, now report the ≥40 km band
+empty.
+
 **>=40 km is empty, and that is a finding.** Porto has no 40 km stretch that two
 taxis repeat. The raw run produced 10 candidates in that band; every one was
 support 2 from a SINGLE taxi, and every one re-entered some cell three times --
 a vehicle circling, whose "length" is the sum of the circling. Across the 500
 routes in the 1-20 km bands no cell is ever entered more than twice, so the
 guard (`cells.revisits_ok`, limit 2) removes 10 of 10 artifacts and 0 of 500 real
-corridors. Rows removed by that guard are excluded here; see the note below.
+corridors. **The miners now apply it at emission**, so this run produced clean
+tables rather than tables that needed cleaning: Method D emitted 0 routes at
+≥40 km, 0 violating the guard, a maximum length of 25.83 km (down from a
+cap-adjacent 43.99) and a minimum support of 56 (up from 2).
 
 **>=20 km is real.** 100 routes at a median of 41 distinct taxis -- not one
 driver's commute. Earlier runs reported this band as hollow because the encoder
@@ -64,13 +72,25 @@ efficiency 1.00 -> 0.17. The per-stage table locates the ceiling: `m7_approx` is
 design. Method D scales best at 2.27x. Caveat: n=1 per configuration, and two
 stages ran slower at 5 workers than at 2, so run-to-run variance is real.
 
+## Where the sketch and the exact method disagree
+
+`approx_top100_full.csv` had 100 rows at ≥40 km whose Space-Saving **estimate**
+was 8 but whose guaranteed **lower bound** was 1 -- the sketch could not rule out
+that every one was a single trip, while Method D (exact) reports the band empty.
+They are excluded here, and the reason is worth stating rather than hiding: a
+frequency sketch's one-sided error bites hardest exactly where support is
+thinnest, which is precisely the long bands. Filtering on the upper bound asks
+"could this be popular?"; the deliverable needs "is this demonstrably shared?",
+which is the lower bound. `route_mining_approx` now applies that floor itself.
+
 ## Known limitations
 
-* `approx_top100_full.csv` at >=40 km: 17 rows survive the revisit guard, all
-  with a Space-Saving lower bound of 1 -- the sketch cannot rule out that they
-  are single-trip routes, and Method D (exact) finds none. Reported as a measured
-  demonstration of one-sided sketch error where support is thinnest, not as
-  corridors.
-* The route tables here were filtered by the revisit guard AFTER the cloud run;
-  the miners now apply it at window emission, so a re-run reproduces these files
-  directly. That re-run has not been performed.
+* Two post-hoc filters were applied when assembling this bundle, both now fixed
+  in the miners for future runs: the 100 sketch rows above, and **1 route from
+  Method A** at ≥10 km that violated the revisit guard. Method A builds its
+  corridors from the longest run shared within a cluster rather than by window
+  emission, so it did not inherit the guard the other methods apply at source.
+* Method A reports 1 route at ≥20 km and Method C none: both cap or prune their
+  candidate space by design (`CLUSTERING_MAX_TRIPS`, `GRAPH_MIN_EDGE_SUPPORT`),
+  and Method D -- exact and scalable -- is the method that carries the
+  deliverable at length.

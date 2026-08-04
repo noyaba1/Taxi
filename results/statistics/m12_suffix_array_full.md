@@ -1,7 +1,7 @@
 # Method D: Suffix Array Sub-route Mining (full)
-_generated: 2026-08-04T03:34:02+00:00_
+_generated: 2026-08-04T06:26:15+00:00_
 
-trips: 1,614,508 | suffixes indexed: 27,033,877 | mining floor: 2 trips | candidate routes: 5,447,275
+trips: 1,614,508 | suffixes indexed: 27,033,877 | mining floor: 2 trips | candidate routes: 5,107,086
 
 Suffixes are bucketed by their first 3 cells, so all occurrences of any sub-route land in one partition and per-partition counting is globally exact -- no cross-partition merge, no window explosion.
 
@@ -18,23 +18,25 @@ The support floor is calibrated **per configuration**: the TIGHTEST floor that s
 | 5 | 2,500 | 0.1548% | 194 | 4,408 | 206 | 18.90 |
 | 10 | 500 | 0.0310% | 181 | 977 | 306 | 21.44 |
 | 20 | 50 | 0.0031% | 153 | 156 | 73 | 25.83 |
-| 40 | 2 | 0.0001% | 10 | 2 | 1 | 43.99 |
+| 40 | 2 | 0.0001% | 0 | 0 | 0 | 0.00 |
+
+> **Empty configurations: >=40 km.** Even at the loosest floor tried (2 trips) the longest contiguous stretch shared by that many trips is 38.9 km. With 1,614,508 trips no 40 km corridor is repeated, so there is nothing popular to report at that length -- a property of the data volume, not of the filter.
 
 ## Support-floor sweep (how length trades against strictness)
 | min_sup | = X% | #maximal-frequent | longest_km |
 |---|---|---|---|
 | 5,000 | 0.3097% | 619 | 16.37 |
 | 2,500 | 0.1548% | 1,286 | 18.90 |
-| 1,000 | 0.0619% | 3,059 | 20.71 |
-| 500 | 0.0310% | 5,834 | 21.44 |
-| 250 | 0.0155% | 11,004 | 21.83 |
-| 100 | 0.0062% | 24,249 | 25.10 |
-| 50 | 0.0031% | 43,767 | 25.83 |
-| 20 | 0.0012% | 93,087 | 26.94 |
-| 10 | 0.0006% | 164,257 | 29.47 |
-| 5 | 0.0003% | 286,253 | 35.25 |
-| 3 | 0.0002% | 423,395 | 40.65 |
-| 2 | 0.0001% | 557,678 | 43.99 |
+| 1,000 | 0.0619% | 3,053 | 20.71 |
+| 500 | 0.0310% | 5,814 | 21.44 |
+| 250 | 0.0155% | 10,928 | 21.83 |
+| 100 | 0.0062% | 23,961 | 25.10 |
+| 50 | 0.0031% | 42,945 | 25.83 |
+| 20 | 0.0012% | 90,354 | 26.54 |
+| 10 | 0.0006% | 157,758 | 28.01 |
+| 5 | 0.0003% | 270,811 | 30.61 |
+| 3 | 0.0002% | 394,595 | 32.79 |
+| 2 | 0.0001% | 510,915 | 38.91 |
 
 ## Holes analysis (why maximal routes terminate = traffic forks)
 

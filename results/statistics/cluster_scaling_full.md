@@ -1,5 +1,5 @@
 # Strong scaling: fixed data, varying cluster size
-_generated: 2026-08-04T05:14:53+00:00_
+_generated: 2026-08-04T09:37:06+00:00_
 
 Workload held fixed at scale `full`. Baseline is the smallest cluster measured (2 workers), because a single-core time for this dataset was never measured and extrapolating one would invent the very number the study is about.
 
@@ -11,6 +11,8 @@ Workload held fixed at scale `full`. Baseline is the smallest cluster measured (
 | 16 | 17 | 3,017 | 50m16s | 1.35x | 0.17 | 70.1% | $3.34 |
 
 `efficiency` = speedup / (workers relative to baseline). 1.00 is perfect scaling; the cost column is an on-demand estimate (VM rate + Dataproc surcharge), not the billed amount.
+
+Excluded 2 incomplete run(s) — a cluster that died part-way finishes faster than one that did the work, so left in they read as fast clusters: `20260804T060821Z-w5` (7 of 11 stages), `20260804T084923Z-w5` (5 of 11 stages).
 
 ## What the numbers say
 

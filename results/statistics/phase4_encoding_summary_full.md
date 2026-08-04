@@ -1,5 +1,5 @@
 # Phase 4 H3 Encoding Summary (res 9, full)
-_generated: 2026-08-04T03:29:14+00:00_
+_generated: 2026-08-04T06:19:48+00:00_
 
 trips in: 1,663,886 | encoded: 1,614,508 | dropped as anomalous: 49,378
 

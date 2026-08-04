@@ -1,5 +1,5 @@
 # Temporal analysis: does 'popular' depend on the hour? (full)
-_generated: 2026-08-04T03:53:34+00:00_
+_generated: 2026-08-04T09:05:40+00:00_
 
 trips: 1,614,508 | corridors compared at >=3 km | support floor 0.05% of each bucket | match = cell-set Jaccard >= 0.5
 
@@ -7,11 +7,11 @@ Every headline number in this project aggregates 2013-2014 whole. This asks whet
 
 | bucket | trips | floor | corridors | overlap vs all-time | wall_s |
 |---|---|---|---|---|---|
-| night | 296,575 | 148 | 100 | 0.76 | 49.6 |
-| morning_peak | 271,960 | 136 | 100 | 0.77 | 47.2 |
-| midday | 506,599 | 253 | 100 | 0.86 | 63.4 |
-| evening_peak | 314,049 | 157 | 100 | 0.89 | 46.4 |
-| evening | 225,325 | 113 | 100 | 0.82 | 36.2 |
+| night | 296,575 | 148 | 100 | 0.76 | 71.4 |
+| morning_peak | 271,960 | 136 | 100 | 0.77 | 67.0 |
+| midday | 506,599 | 253 | 100 | 0.86 | 89.9 |
+| evening_peak | 314,049 | 157 | 100 | 0.89 | 67.2 |
+| evening | 225,325 | 113 | 100 | 0.82 | 53.3 |
 
 ## Verdict
 

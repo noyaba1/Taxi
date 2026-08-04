@@ -50,3 +50,6 @@ build/
 # Local run logs
 *.log
 sweep.log
+
+# macOS
+.DS_Store

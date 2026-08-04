@@ -260,6 +260,13 @@ def discover(spark, scale: str):
         length = cells_mod.path_length_km(list(run))
         if length < min_len:
             return pd.DataFrame(columns=run_schema.fieldNames())
+        # A shared run that keeps re-entering the same cell is a cluster of
+        # vehicles circling, and `length` above is the sum of the circling.
+        # Method D and the window miners apply this at emission; Method A builds
+        # its corridors by a different route (longest run common to a cluster)
+        # and so needs it applied here rather than inheriting it.
+        if not cells_mod.revisits_ok(list(run)):
+            return pd.DataFrame(columns=run_schema.fieldNames())
         return pd.DataFrame([(cid, size, int(n_with), len(run), float(length),
                               DELIM.join(run))],
                             columns=run_schema.fieldNames())

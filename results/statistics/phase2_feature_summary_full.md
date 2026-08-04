@@ -1,5 +1,5 @@
 # Phase 2 Feature Summary (full)
-_generated: 2026-08-04T03:25:44+00:00_
+_generated: 2026-08-04T06:16:21+00:00_
 
 rows: 1,663,886  |  source: gs://taxi-project-noyabayazi/taxi/processed/trips_features_full.parquet
 

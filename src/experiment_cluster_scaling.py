@@ -124,7 +124,27 @@ def amdahl_serial_fraction(speedup: float, n: float) -> float | None:
     return p if 0.0 <= p <= 1.0 else None
 
 
+def drop_partial(runs: dict) -> tuple[dict, list]:
+    """
+    Keep only runs that completed the full stage list.
+
+    A run whose cluster died half way finishes FASTER than a complete one, so
+    left in the table it reads as a faster cluster. Measured: an aborted
+    5-worker run reported 3.01x speedup at parallel efficiency 1.20 -- superlinear,
+    from having done half the work. Stage count is the discriminator because
+    every complete run at a given scale runs the same stages.
+    """
+    if not runs:
+        return runs, []
+    full = max(len(r["stages"]) for r in runs.values())
+    keep = {k: r for k, r in runs.items() if len(r["stages"]) == full}
+    dropped = [(k, len(r["stages"]), full)
+               for k, r in runs.items() if len(r["stages"]) != full]
+    return keep, dropped
+
+
 def build_report(runs: dict, scale: str, vm_usd_hr: float) -> list[str]:
+    runs, dropped = drop_partial(runs)
     ordered = sorted(runs.items(), key=lambda kv: (kv[1]["workers"], kv[0]))
     lines = ["# Strong scaling: fixed data, varying cluster size",
              f"_generated: {datetime.now(timezone.utc).isoformat(timespec='seconds')}_",
@@ -185,6 +205,12 @@ def build_report(runs: dict, scale: str, vm_usd_hr: float) -> list[str]:
                   "1.00 is perfect scaling; the cost column is an on-demand "
                   "estimate (VM rate + Dataproc surcharge), not the billed "
                   "amount.", ""]
+    if dropped:
+        lines += [f"Excluded {len(dropped)} incomplete run(s) — a cluster that died "
+                  f"part-way finishes faster than one that did the work, so left in "
+                  f"they read as fast clusters: " +
+                  ", ".join(f"`{k}` ({n} of {f} stages)" for k, n, f in dropped) + ".",
+                  ""]
 
     lines += _conclusions(rows_for_conclusion)
     lines += _per_stage(ordered, base_key)

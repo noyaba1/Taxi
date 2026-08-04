@@ -243,15 +243,23 @@ def main(scale: str, approx_only: bool) -> None:
 
         csv_rows = []
         for L in THRESHOLDS:
-            # Same popularity floor M5 applies, on the SKETCH side too. The
-            # sketch's own upper bound is the right instrument: `ub < MIN_SUPPORT`
-            # means the route cannot be popular even under the most generous
-            # reading of the estimate, so dropping it can never discard a genuine
-            # heavy hitter. Without this the >=40 km band shipped 100 rows whose
-            # every bound was 1 -- and the top ones were a parked taxi's GPS
-            # jitter oscillating across one cell boundary, accumulating 42 km of
-            # "length" from 117 cells that were really two.
-            a = [c for c in cand[L] if c[3] >= MIN_SUPPORT][:TOP_K]
+            # Filter on the sketch's LOWER bound, not its upper one.
+            #
+            # Space-Saving guarantees only that a returned item's true support
+            # lies in [lb, ub]. Filtering on `ub >= MIN_SUPPORT` (the first
+            # attempt) asks "could this be popular?", which is the right
+            # question for retaining candidates and the wrong one for a
+            # deliverable: the >=40 km band came back with 100 rows whose
+            # estimate was 8 and whose lb was 1, i.e. the sketch could not rule
+            # out that every one of them was a single trip. Method D, which is
+            # exact, reports that band empty.
+            #
+            # `lb >= MIN_SUPPORT` asks "is this route DEMONSTRABLY shared?" and
+            # only reports what the sketch can stand behind. The gap between the
+            # two is not noise to be hidden -- it is the one-sided error of a
+            # frequency sketch, showing up exactly where support is thinnest,
+            # which is the sparse tail these long bands live in.
+            a = [c for c in cand[L] if c[2] >= MIN_SUPPORT][:TOP_K]
             ss_ae, ss_re, cms_ae = [], [], []
             for rank, (k, est, lb, ub) in enumerate(a, 1):
                 ex_sup, _ = (info or {}).get(k, (None, None))

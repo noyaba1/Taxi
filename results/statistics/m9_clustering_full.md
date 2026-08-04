@@ -1,5 +1,5 @@
 # M9 Method A: Clustering Route Discovery (full)
-_generated: 2026-08-04T03:39:14+00:00_
+_generated: 2026-08-04T06:32:32+00:00_
 
 trips clustered: 49,929 of 1,607,677 (cap CLUSTERING_MAX_TRIPS=50,000) | LSH tables=5 jdist<=0.3 | edges: 423,629 | clusters: 3,363
 
