@@ -37,6 +37,7 @@ OUT = ROOT / "build" / "deck" / "Porto_Taxi_Results.pptx"
 OUT.parent.mkdir(parents=True, exist_ok=True)
 
 BANDS = [1, 3, 5, 10, 20, 40]
+AUTHORS = ["Ofek Hazum", "Nadav Cohen", "Noya Bayazi", "Aviya Ohayon"]
 
 # ---- ink: one surface, one accent, three categorical hues -------------------
 SURFACE = RGBColor(0x14, 0x16, 0x1A)
@@ -239,6 +240,8 @@ def build():
     body(s, "1,710,670 trips · 442 taxis · GPS every 15 s · PySpark on GCP Dataproc\n"
             "Top-100 popular sub-routes at minimum lengths {1, 3, 5, 10, 20, 40} km,\n"
             "found by four independent methods over one shared representation.", 4.1)
+    rule(s, 5.65)
+    body(s, "   ·   ".join(AUTHORS), 5.9, size=14, color=MUTED)
 
     # 2 -- the one idea
     s = blank(prs)
