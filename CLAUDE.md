@@ -42,7 +42,7 @@ Always use `.venv/bin/python`.
 .venv/bin/python -m src.validate_env                    # env gate
 .venv/bin/python -m src.make_sample --sample            # build a scale
 .venv/bin/python -m src.run_pipeline --sample --verify  # 16 stages + 9 verifiers
-bash scripts/run_tests.sh                               # 60 tests (env gate first)
+bash scripts/run_tests.sh                               # the unit suite (env gate first)
 bash scripts/run_tests.sh --fresh                       # rebuild .venv from the lock
 bash scripts/cloud_rehearsal.sh                         # URI-path dress rehearsal
 ```

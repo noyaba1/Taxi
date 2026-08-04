@@ -216,7 +216,7 @@ Stop the run (No-Go) the moment a condition fails — before wasting budget.
 | Step | Condition | GO | NO-GO → recovery |
 |---|---|---|---|
 | Code baseline | HEAD ≥ `d820a67`, tree clean | proceed | commit/pull; re-zip `src.zip` |
-| Local pre-flight | `run_pipeline --sample --verify` all PASS + 60 tests | proceed | fix locally (free); do NOT create cluster |
+| Local pre-flight | `run_pipeline --sample --verify` all PASS + unit suite green | proceed | fix locally (free); do NOT create cluster |
 | Blocker asserts | 4 greps in PREFLIGHT §A3 non-zero | proceed | wrong commit uploaded → re-zip |
 | Bucket/APIs | `gsutil ls $BUCKET` ok; dataproc+storage enabled | proceed | enable billing/APIs |
 | Raw upload | `gsutil ls D/raw/train.csv` ~1.9 GiB | proceed | re-upload |

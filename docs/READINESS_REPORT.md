@@ -37,7 +37,7 @@ no architecture changes.**
 ## 3. What was verified
 
 - **All 9 verifiers PASS at 50k** (route-mining, suffix, approx, maximal,
-  clustering, graph, anomaly) + **60 unit tests** green.
+  clustering, graph, anomaly) + the **unit suite** green.
 - **M5/M7 confirmed to 100k**: exact mining 108 s (9.6M→19M windows, no OOM);
   approx 208 s with the `treeReduce` fix holding at 96 partitions.
 - **Approximate method's scaling advantage demonstrated**: memory ratio grew from

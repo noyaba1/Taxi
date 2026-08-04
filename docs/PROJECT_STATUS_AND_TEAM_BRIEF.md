@@ -58,7 +58,7 @@ with an independent `verify_*.py` checker.
 | **Approximate** | Space-Saving + Count-Min vs exact | scale + the approximate-algorithms requirement | ✅ | `approx_top100` + memory/accuracy metrics |
 | **Anomaly detection** | 5 detectors (speed/idle/distance/shape/drift) | the "anomalous routes" requirement | ✅ | `anomalies_top50` |
 | **Visualization** | Folium map + Colab notebook | the map demo | ✅ | `porto_map_*.html`, notebook |
-| **Validation** | a `verify_*` per stage + 60 unit tests | prove correctness independently | ✅ | all PASS at 50k |
+| **Validation** | a `verify_*` per stage + the unit suite | prove correctness independently | ✅ | all PASS at 50k |
 | **Release audit** | per-stage release review | catch cloud failures before they cost money | ✅ | `RELEASE_AUDIT.md` |
 | **Pre-flight** | local gate + dry runs (50k/100k) | budget protection; found & fixed 2 real bugs | ✅ | `PREFLIGHT.md`, `READINESS_REPORT.md` |
 | **Documentation** | design, cloud runbooks, monitoring, workbook | run the cloud step without guessing | ✅ | see §5 |

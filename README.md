@@ -40,7 +40,7 @@ See [SETUP.md](SETUP.md) for the full environment (Java 17, Python 3.11).
 .venv/bin/python -m src.validate_env                    # env gate
 .venv/bin/python -m src.make_sample --sample            # 5,000 trips
 .venv/bin/python -m src.run_pipeline --sample --verify  # 16 stages + 9 verifiers
-.venv/bin/python -m pytest tests/ -q                    # 56 unit tests
+.venv/bin/python -m pytest tests/ -q                    # the unit suite
 ```
 
 Open `outputs/maps/porto_map_sample.html`.
@@ -138,7 +138,7 @@ method**:
 - graph routes validated against real trips (anti-"Frankenstein");
 - anomaly self-consistency.
 
-Plus 56 unit tests, including brute-force cross-checks of the LCP-interval
+Plus 73 unit tests, including brute-force cross-checks of the LCP-interval
 enumeration and the Aho-Corasick automaton, and a regression test for the storage
 layer that decides whether cloud results survive teardown.
 

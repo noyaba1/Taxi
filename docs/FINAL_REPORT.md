@@ -25,7 +25,7 @@ trips (188,761 after cleaning), **full** = 1,710,670 trips (DataProc).
 | A clustering method | `route_mining_clustering.py` (Method A) |
 | A **suffix tree / suffix array** method | `route_mining_suffix_array.py` (Method D) |
 | A method that is neither | `route_mining_graph.py` (Method C) |
-| Hash-based approximate structures | MinHash-LSH, Space-Saving, Count-Min, GK quantiles |
+| Hash-based approximate structures | MinHash-LSH (A), Space-Saving + Count-Min (M7), HyperLogLog (zones — measured negative, §9), GK quantiles |
 | Method comparison: runtime, accuracy, memory | `evaluation.py` → `method_comparison_*.md` |
 | Map demo under Colab Enterprise | `notebooks/porto_routes_colab.ipynb`, all six configs |
 | Popular routes / activity zones / anomalies | Methods A–D / `route_mining_graph` / `anomaly_analysis` |
@@ -278,53 +278,94 @@ Every stage has a `verify_*.py` that recomputes its result a different way:
 - clustering cohesion, route continuity, graph anti-"Frankenstein", anomaly
   self-consistency.
 
-Plus **56 unit tests**, including brute-force cross-checks of the LCP-interval
+Plus **73 unit tests**, including brute-force cross-checks of the LCP-interval
 enumeration (8 cases) and the Aho-Corasick automaton (400 randomised trials), and
 a regression test that a window may never span a GPS gap.
 
 ---
 
-## 7. Approximate vs exact (measured at two scales)
+## 7. Approximate vs exact (measured)
 
-Run at 5k and at 200k trips. The second scale was added specifically to test a
-claim this section used to make, and it falsified it.
+Accuracy is `overlap@100` against the exact top-100, so measuring it requires
+running the exact baseline the sketches exist to *avoid*. At 1.71M that means
+shuffling 359,752,506 window rows, so the full-scale run used `--approx-only`
+and reports cost without accuracy. **Accuracy below is quoted at 5k, cost at
+1.71M, and the two are not interchangeable** — an unlabelled recall figure would
+imply a full-scale measurement that was never taken.
 
-| min_len | recall@100 (5k) | **recall@100 (200k)** | rel. error (200k) |
-|---|---|---|---|
-| 1 km | 0.99 | **1.00** | 0.000 |
-| 3 km | 0.92 | **0.99** | 0.001 |
-| 5 km | 0.80 | **0.99** | 0.024 |
-| ≥10 km | 0.17 | **0.01** | 110.06 |
-| ≥20 km | 0.00 | **0.00** | 24.0 |
+Source: `results/statistics/m7_approx_mining_sample.md` (the one sample-scale
+file in the results bundle, kept for exactly this reason) and
+`m7_approx_mining_full.md`.
 
-Cost at 200k (33,597,872 window rows into the exact `groupBy`):
+### Accuracy at 5k, re-measured 2026-08-04
 
-| | sketch | exact | ratio |
-|---|---|---|---|
-| time | 86.5 s | 89.0 s | ~1× |
-| memory | **66.3 MB** (fixed by capacity) | **6,986.6 MB** (14,627,639 keys) | **105× smaller** |
+| min_len | candidates | overlap@100 | precision | recall | rel. error |
+|---|---|---|---|---|---|
+| 1 km | 42,822 | 99 | 0.99 | **0.99** | 0.000 |
+| 3 km | 45,755 | 94 | 0.94 | **0.94** | 0.000 |
+| 5 km | 13,007 | 97 | 0.97 | **0.97** | 0.000 |
+| ≥10 km | 5,845 | 97 | 0.97 | **0.97** | 0.000 |
+| ≥20 km | 32,530 | 78 | 0.78 | **0.78** | 0.000 |
+| ≥40 km | 564 | 0 | 0.00 | **0.00** | — |
 
-**The case for the sketches is memory, and it strengthens with scale.** At 5k the
-memory ratio was only ~3×; at 200k it is 105×. Runtime is a wash — the sketch
-does not save time, it saves the key table. That is the honest form of the
-argument, and it needed two scales to make.
+**Relative error is 0.000 in every retained band, and that is a consequence of a
+fix rather than a coincidence.** Candidates are filtered on Space-Saving's
+guaranteed **lower** bound, not its estimate: a route is emitted only when the
+sketch's one-sided error cannot have inflated it into the list. Filtering on the
+upper bound asks *"could this be popular?"*; the deliverable asks *"is this
+demonstrably shared?"* Before that fix, 100 rows shipped at ≥40 km with estimate
+8 and lower bound 1 — a band the exact method reports as empty.
 
-### A claim this section used to make, now disproved
+### Cost
 
-It previously read: *"The ≥10 km rows are a genuine sample artefact, not a sketch
-failure… it resolves with scale."* It does not. Recall at ≥10 km went from 0.17
-at 5k to **0.01 at 200k** — worse, not better, with 40× the data.
+| | 5k | 1.71M |
+|---|---|---|
+| sketch time | 4.6 s | 1,290.7 s |
+| sketch memory | **82.2 MB** (fixed by capacity) | **172.8 MB** (fixed by capacity) |
+| exact groupBy | 1.8 s | not run (`--approx-only`) |
+| exact key table | 253.7 MB (578,880 keys) | — |
+| window rows into the exact path | 1,162,961 | 359,752,506 |
+| memory ratio | **3.1× smaller** | — |
 
-The reason is structural, not statistical. Space-Saving retains **heavy hitters**;
-a corridor is long *because* few trips repeat it, so long corridors sit in the
-tail by construction. Adding data adds more short frequent corridors that compete
-for the same retained slots, so long ones are evicted harder. No amount of extra
-data fixes this, because the sketch is answering "what is frequent?" and the
-deliverable asks "what is long *and* frequent?"
+**The case for the sketches is memory, not time.** The sketch bundle is bounded
+by its capacity, so it grows 82 → 173 MB while the exact key table it replaces
+grows with the number of distinct sub-routes. Runtime is not a win: M7 is the
+most expensive stage in the pipeline, because the sketch saves the key *table*
+and not the window enumeration that feeds it.
 
-This is why Method D carries the deliverable and the sketches do not: the exact
-suffix array finds a 26.25 km corridor with support 2, which a top-k sketch
-cannot see in principle.
+### Two claims this section used to make, both now retracted
+
+**First retraction (kept for the record).** It once read: *"the ≥10 km rows are a
+sample artefact, not a sketch failure… it resolves with scale."* A 200k run
+falsified that — recall at ≥10 km measured 0.17 at 5k and 0.01 at 200k.
+
+**Second retraction: that first retraction was measuring the encoder, not the
+sketch.** Both of those runs predate gap densification (§9e). The encoder was
+dropping cells a vehicle demonstrably drove, so long windows were being destroyed
+before the sketch ever saw them — and a comparison against an exact baseline
+computed on the *same* damaged corpus cannot separate the two effects. Post-fix,
+recall at ≥10 km is **0.97**, not 0.17. The 200k figures are withdrawn rather
+than restated: the raw dataset is not held locally and re-measuring that scale
+needs the cloud, so this section reports one scale honestly instead of two
+scales where one is stale.
+
+**What survives is the structural argument, with its location corrected.**
+Space-Saving retains **heavy hitters**, and a corridor is long *because* few
+trips repeat it — so long corridors sit in the tail by construction and compete
+for retained slots against far more numerous short ones. That is a property of
+the sketch, not of the corpus, and more data does not repair it. The measurement
+now places the fall-off at **≥20 km (recall 0.78)** rather than at ≥10 km. The
+earlier number attributed an encoder defect to the sketch and so put the cliff
+two bands too early.
+
+**This is still why Method D carries the deliverable.** Its longest corridor is
+**25.83 km, supported by 59 trips across 48 distinct taxis** — and the sketch
+still misses roughly a fifth of that band's top 100. Note that the reason has
+changed with the data: pre-densification this corridor had support 2 and was
+invisible to a top-k sketch *in principle*. It is now comfortably frequent, and
+the sketch misses it through slot competition instead. The conclusion held while
+its justification did not, which is the case worth flagging rather than quietly
+inheriting.
 
 ---
 
@@ -878,7 +919,7 @@ reaching for a cardinality sketch is an *unbounded* group, which this is not.
 .venv/bin/python -m src.validate_env
 .venv/bin/python -m src.make_sample --sample
 .venv/bin/python -m src.run_pipeline --sample --verify   # 16 stages + 9 verifiers
-.venv/bin/python -m pytest tests/ -q                     # 60 tests
+.venv/bin/python -m pytest tests/ -q                     # the unit suite
 
 .venv/bin/python -m src.make_sample --mid                # 200k
 .venv/bin/python -m src.run_pipeline --mid               # scale behaviour
