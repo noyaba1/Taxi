@@ -19,7 +19,7 @@ trips (188,761 after cleaning), **full** = 1,710,670 trips (DataProc).
 | Derive points / duration / distance | `clean_data.py`, `feature_engineering.py` |
 | Documented DataFrame + basic statistics | `summarize_features.py` → `phase2_feature_summary_*.md` |
 | Spatial encoding, grid choice justified | `spatial_encoding.py --compare-grids` → `grid_comparison_*.md` |
-| Top-100 long sub-routes at ≥1/3/5/10/20/40 km | all four miners, `outputs/routes/*_top100_*.csv` |
+| Top-100 long sub-routes at ≥1/3/5/10/20/40 km | all four miners → **`results/routes/*_top100_full.csv`** (the submitted bundle, 1.71M trips; `outputs/` is gitignored and holds only local runs) |
 | ≥X% support, maximising length | X calibrated **per length config** — `route_mining_suffix_array.py` (all scales) and `route_mining_maximal.py` (sample-scale reference) |
 | The "holes" (corridors fragmenting at forks) | holes section in both miners above |
 | A clustering method | `route_mining_clustering.py` (Method A) |
@@ -29,6 +29,7 @@ trips (188,761 after cleaning), **full** = 1,710,670 trips (DataProc).
 | Method comparison: runtime, accuracy, memory | `evaluation.py` → `method_comparison_*.md` |
 | Map demo under Colab Enterprise | `notebooks/porto_routes_colab.ipynb`, all six configs |
 | Popular routes / activity zones / anomalies | Methods A–D / `route_mining_graph` / `anomaly_analysis` |
+| Cluster scalability (speedup / parallel efficiency) | 2/5/10/16 workers on the same 1.71M workload → `experiment_cluster_scaling.py` → `results/statistics/cluster_scaling_full.md` (§9f) |
 
 ---
 
@@ -91,7 +92,10 @@ the whole qualifying set, not over the top-100 cut. That is literally "the
 longest route above the popularity threshold", swept across thresholds instead of
 fixed at one. Read the two together: reading 1 gives the graded list, the sweep
 gives the length/strictness frontier, and §9d shows where they diverge — at
-≥20 km, where the longest qualifying route (26.25 km) is 2 trips from one taxi.
+≥20 km, where the longest qualifying route (26.25 km) was 2 trips from one taxi.
+(That divergence was an artifact of the encoder starving the long bands; §9e
+re-measures it after the fix, and the same band now holds 100 routes at a
+median of 41 distinct taxis.)
 
 Note the `longest_km` column in the per-band tables is the longest route *within
 the top-100 by support*, not the global longest above the floor; those coincide
@@ -461,6 +465,12 @@ The result at sample scale, from the method comparison:
 | ≥5 km | 100 | 1.00 | 0 |
 | ≥10 km | 13 | 1.00 | **11** |
 
+> The ≥10 km row here carries the same encoder artifact §9e diagnoses — at
+> sample scale the band held 13 routes for the same reason it held 22 at full
+> scale. After densification the full-scale band holds 100 routes at a median
+> of 212 distinct taxis. The `support_taxis` column below was still the right
+> instrument; it was reading starved data.
+
 Short corridors are genuinely public (≈1 trip per vehicle). The long band is
 **dominated by single-vehicle repeats** — 11 of 13, and the top ≥10 km entry is
 2 trips from *one* taxi. Corridor length and the confidence it deserves move in
@@ -623,6 +633,12 @@ Porto has no 40 km stretch that even two taxis repeat — a fact about the city.
 
 ### The deliverable, and the honest reading of it
 
+> ⚠️ **The ≥10 km and ≥20 km rows below are SUPERSEDED by §9e.** They were
+> measured before gap densification, which is now known to have been starving
+> exactly those bands. The reasoning in this subsection is sound and the
+> distinct-taxi column did its job; the *data* it was reasoning about was
+> incomplete. Read §9e for the corrected figures.
+
 | min_len | min_sup | = X% | routes | top support | distinct taxis | longest |
 |---|---|---|---|---|---|---|
 | ≥1 km | 5,000 | 0.310% | 639 | 14,330 | **435** | 4.70 km |
@@ -643,6 +659,121 @@ popularity. This is the length-versus-confidence trade-off stated numerically:
 median trips-per-taxi falls 17.9 → 8.5 → 4.0 → 1.2 → 1.0 as the length
 requirement rises. Without the distinct-taxi column this would have been
 reported as a 26 km popular corridor.
+
+## 9e. The bands were being starved by the encoder (2026-08-04 re-run)
+
+The paragraph above is the right instinct applied to incomplete data. The
+≥20 km band was not hollow because Porto lacks long shared corridors. It was
+hollow because the *encoder* was destroying the evidence.
+
+GPS is sampled every 15 s, so above ~32 km/h a vehicle crosses an H3 cell
+between two fixes and that cell is never recorded. Measured on the encoded
+corpus: only **95.1% of consecutive cells were adjacent**. A sub-route matches
+only when *every* cell matches, so the fraction of windows surviving intact
+falls as 0.951^(L-1):
+
+| band | 1 km | 3 km | 5 km | 10 km | 20 km | 40 km |
+|---|---|---|---|---|---|---|
+| P(window intact) | 86% | 64% | 47% | **23%** | **5.5%** | 0.3% |
+
+And two taxis matched each other only where their holes coincided, so support
+decayed faster still. The measured bucket coverage tracked that curve almost
+exactly, which is what exposed it.
+
+`cells.densify_points` resamples the GPS **polyline** — not the cell chain —
+so no cell along a segment can be stepped over. Bounded by the same derived
+`max_cell_hop_km` that `split_at_gaps` uses, in the opposite direction: below
+it a retained vehicle demonstrably drove the distance, above it we do not know
+the path and must not invent one. Cost: **+4.6% cells** for **100% adjacency**
+(`worst_hop_km` 0.368 = one cell step, across all 1,614,508 encoded trips).
+
+### The corrected deliverable (Method D, top-100 per band, 1.71M trips)
+
+| min_len | routes | median support | median taxis | max taxis | longest |
+|---|---|---|---|---|---|
+| ≥1 km | 100 | 7,370 | **422** | 438 | 16.37 km |
+| ≥3 km | 100 | 6,118 | **412** | 434 | 16.37 km |
+| ≥5 km | 100 | 3,009 | **384** | 422 | 18.90 km |
+| ≥10 km | 100 | 592 | **212** | 306 | 21.44 km |
+| ≥20 km | 100 | 67 | **41** | 75 | 25.83 km |
+| ≥40 km | **0** | — | — | — | — |
+
+**The "hollow" reading is reversed.** At ≥20 km, **0 of 100 routes have ≤2
+taxis** — the minimum is 9 and the median is 41 distinct vehicles out of a
+442-taxi fleet. The length-versus-confidence trade-off is real and still
+visible (median trips-per-taxi falls 18.0 → 15.2 → 8.2 → 3.2 → 1.6 as the
+length requirement rises), but it is a gradient, not a cliff, and it no longer
+bottoms out at a single vehicle.
+
+### ≥40 km is still empty — and now we can show the candidates were artifacts
+
+The re-run *did* produce 10 candidates in the ≥40 km band, the longest claiming
+44.0 km. Every one was support 2 from a **single** taxi, and every one re-entered
+some cell **three times**. `_compact` removes only *consecutive* duplicates, so a
+vehicle circling encodes `A>B>A>B` and accumulates length it never travelled;
+densification simply gave such trips enough cells to reach 40 km of it.
+
+The separation is total, so the threshold is derived rather than tuned:
+
+| | 1–20 km bands (500 routes) | ≥40 km candidates (10 routes) |
+|---|---|---|
+| max visits to any one cell | **≤ 2, all of them** | **3, all of them** |
+
+`cells.revisits_ok` (limit 2) removes **10 of 10 artifacts and 0 of 500 real
+corridors**. Two visits is deliberate slack — driving a street and returning
+along it is ordinary taxi behaviour. Three visits to the same ~200 m hexagon
+inside one sub-route is not a corridor. **Porto has no 40 km stretch that two
+taxis repeat**, and that conclusion is unchanged from §9d.
+
+## 9f. Strong scaling: what adding machines actually buys
+
+Everything above varies the *data* on a fixed cluster. This varies the
+*cluster* on fixed data — the same 1,710,670-trip workload on 2, 5, 10 and 16
+`n2-standard-4` workers. It is the one measurement in this project that cannot
+be made on a laptop.
+
+No extra instrumentation was needed: every stage of every run already appended
+its wall time to `timings.jsonl`, and `cli._cluster_tags` stamps each row with
+the cluster that produced it, so the sweep leaves a complete dataset behind as
+a side effect of runs already paid for.
+
+| workers | wall clock | speedup | parallel efficiency |
+|---|---|---|---|
+| 2 | 68m04s | 1.00x | 1.00 |
+| 5 | 65m46s | 1.03x | 0.41 |
+| 10 | 53m13s | 1.28x | 0.26 |
+| 16 | 50m16s | **1.35x** | **0.17** |
+
+**1.35x from 8x the machines.** The interesting part is not the curve but where
+it comes from — the per-stage breakdown locates the ceiling instead of merely
+reporting it:
+
+| stage | share of wall (2w) | speedup 2w → 16w |
+|---|---|---|
+| `m7_approx` | **34%** | **1.04x** |
+| `m18_temporal` | 19% | 1.71x |
+| `m12_suffix_array` | 15% | **2.27x** |
+| `m9_clustering` | 9% | 1.29x (capped at 50k trips *by design*) |
+| `holdout_validation`, `m1_summary` | small | ~1.00x (fixed cost) |
+
+Method D — the method that carries the deliverable — scales best. But
+`m7_approx` is a third of the runtime and does not distribute at all, and
+Method A is capped at `CLUSTERING_MAX_TRIPS` by a deliberate design decision
+(§9b). Those two plus the fixed-cost stages are the whole story: a Karp-Flatt
+serial fraction around 79%.
+
+**Honest caveats.** n=1 per configuration — no repeats. `m7_approx` and
+`m3_encoding` each ran *slower* at 5 workers than at 2, so run-to-run variance
+is real and not separated from the trend here. And
+`spark.sql.shuffle.partitions=400` is held fixed across all four runs, which is
+the correct control for strong scaling but means partition granularity per core
+varies 50:1 between the smallest and largest cluster; some of the efficiency
+drop at the top end is that rather than Amdahl.
+
+The practical reading for a budgeted project: at this data size the cheapest
+configuration is also nearly the fastest, and buying more machines buys very
+little. That is a finding about *this* workload at *this* scale, not about
+Spark.
 
 ### The other findings held at full scale
 
@@ -693,9 +824,14 @@ reaching for a cardinality sketch is an *unbounded* group, which this is not.
 
    The lesson is the one the storage boundary was built for, arriving through a
    different door: the dangerous cloud failures are the ones that still exit 0.
-2. **The ≥40 km configuration is empty, and ≥20 km is hollow** (§9d). Both are
-   findings rather than gaps, but they should be presented as such rather than
-   as a top-100 list the reader will assume is meaningful.
+2. **The ≥40 km configuration is empty** (§9d, §9e) — a finding rather than a
+   gap, and it should be presented as such rather than as a top-100 list the
+   reader will assume is meaningful. The companion claim that ≥20 km is *hollow*
+   was **wrong, and §9e retracts it**: that band was being starved by a sampling
+   artifact in the encoder, and now holds 100 routes at a median of 41 distinct
+   taxis. The limitation worth keeping from it is narrower — length and
+   confidence still trade against each other, just as a gradient rather than a
+   cliff.
 3. **Method B (maximal-frequent) is sample-scale only.** It shares the O(n²)
    support table; at 200k it spilled 21 GB without finishing. Method D carries
    its deliverable at scale and reproduces its sample output exactly, so nothing
