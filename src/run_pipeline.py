@@ -57,6 +57,10 @@ STAGES = [
     # Does "popular" depend on the hour? The headline lists average 2013-2014
     # whole, and an average can describe no actual hour.
     ("M18 temporal analysis", "src.temporal_analysis", [], ALL),
+    # CALL_TYPE has been carried through cleaning since Phase 1 without ever
+    # being asked anything. It answers a demand-side question the route tables
+    # cannot: not how many trips used a corridor, but how those trips BEGAN.
+    ("M19 rider mix (call type)", "src.rider_mix", [], ALL),
     ("M15 visualization", "src.visualization", [], ALL),
 ]
 VERIFIERS = [
