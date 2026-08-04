@@ -83,6 +83,24 @@ thinnest, which is precisely the long bands. Filtering on the upper bound asks
 "could this be popular?"; the deliverable needs "is this demonstrably shared?",
 which is the lower bound. `route_mining_approx` now applies that floor itself.
 
+### How accurate the sketch is, and at which scale
+
+`statistics/m7_approx_mining_sample.md` is the **only** file in this bundle at
+sample scale, and it is here deliberately. Accuracy is `overlap@100` against the
+exact top-100, so measuring it requires running the exact baseline the sketches
+exist to avoid: at 1.71M that means shuffling 359,752,506 window rows, so the
+full-scale run used `--approx-only` and reports cost without accuracy. Cost is
+therefore quoted at full scale and accuracy at sample scale; conflating the two
+would imply a 1.71M recall figure that was never measured.
+
+Re-measured after the lower-bound fix above: recall 0.99 / 0.94 / 0.97 / 0.97 at
+1–10 km, **0.78** at ≥20 km, 0.00 at ≥40 km. Mean relative error is **0.000**
+across every retained band -- a consequence of the fix, not a coincidence, since
+filtering on the guaranteed lower bound only admits routes whose count the sketch
+cannot have overstated. The ≥20 km fall-off is structural: Space-Saving retains
+heavy hitters, and a corridor is long *because* few trips repeat it, so long
+corridors sit in the tail by construction. More data does not repair this.
+
 ## Known limitations
 
 * Two post-hoc filters were applied when assembling this bundle, both now fixed
