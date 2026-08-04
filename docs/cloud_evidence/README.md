@@ -10,6 +10,31 @@ what stops the billing — so the machine list exists only during the run.
 | `cluster_size.txt` | 6 machines (1 master + 5 workers), each VM named and RUNNING |
 | `cluster_describe.yaml` | full cluster spec: image `2.2.84-debian12`, `n2-standard-4`, disks, properties |
 
+## The 2026-08-04 run (`porto-final`) — the one the results come from
+
+The July run above predates gap densification, so its route tables have been
+superseded (FINAL_REPORT §9e). The `*_20260804.*` files evidence the run that
+produced the submitted `results/` bundle: same shape, 1 master + 5 workers of
+`n2-standard-4` in `europe-west1-c`.
+
+| file | what it evidences |
+|---|---|
+| `cluster_size_20260804.txt` | 6 machines, each VM named and RUNNING |
+| `cluster_describe_20260804.yaml` | the spec, **including the lifecycle guards** |
+
+The lifecycle fields are worth reading, because they are GCP attesting to the
+budget controls rather than us asserting them:
+
+```yaml
+idleDeleteTtl:  1800s                       # --max-idle 30m
+autoDeleteTime: '2026-08-04T10:08:31.151457Z'   # --max-age 4h, from 06:08:31Z
+```
+
+`--max-age` exists because the other two guards each have a hole: the EXIT trap
+covers a clean exit but not a killed shell or a slept laptop, and `--max-idle`
+only fires when the cluster is IDLE — a job that HANGS is neither, and six VMs
+would bill until someone noticed.
+
 Reproduce during a future run, from a second terminal:
 
 ```bash

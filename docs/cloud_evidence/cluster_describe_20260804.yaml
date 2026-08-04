@@ -1,0 +1,138 @@
+clusterName: porto-final
+clusterUuid: c1c8e7aa-3d34-4e52-bd4e-69da483cc2ba
+config:
+  configBucket: dataproc-staging-europe-west1-781309321342-vmupqrcd
+  endpointConfig: {}
+  gceClusterConfig:
+    internalIpOnly: true
+    metadata:
+      WHEELHOUSE_URI: gs://taxi-project-noyabayazi/taxi/wheels
+    networkUri: https://www.googleapis.com/compute/v1/projects/finalproj-noyabayazi/global/networks/default
+    resourceManagerTags:
+      tagKeys/281484247092652: tagValues/281483067396502
+    serviceAccountScopes:
+    - https://www.googleapis.com/auth/cloud-platform
+    shieldedInstanceConfig:
+      enableIntegrityMonitoring: true
+      enableSecureBoot: true
+      enableVtpm: true
+    zoneUri: https://www.googleapis.com/compute/v1/projects/finalproj-noyabayazi/zones/europe-west1-c
+  initializationActions:
+  - executableFile: gs://taxi-project-noyabayazi/taxi/scripts/init_offline_deps.sh
+    executionTimeout: 900s
+  lifecycleConfig:
+    autoDeleteTime: '2026-08-04T10:08:31.151457Z'
+    idleDeleteTtl: 1800s
+    idleStartTime: '2026-08-04T06:08:31.151457Z'
+  masterConfig:
+    diskConfig:
+      bootDiskSizeGb: 1000
+      bootDiskType: pd-standard
+    imageUri: https://www.googleapis.com/compute/v1/projects/cloud-dataproc/global/images/dataproc-2-2-deb12-20260619-045100-rc01
+    instanceNames:
+    - porto-final-m
+    machineTypeUri: https://www.googleapis.com/compute/v1/projects/finalproj-noyabayazi/zones/europe-west1-c/machineTypes/n2-standard-4
+    minCpuPlatform: AUTOMATIC
+    numInstances: 1
+    preemptibility: NON_PREEMPTIBLE
+  softwareConfig:
+    imageVersion: 2.2.84-debian12
+    properties:
+      capacity-scheduler:yarn.scheduler.capacity.resource-calculator: org.apache.hadoop.yarn.util.resource.DominantResourceCalculator
+      capacity-scheduler:yarn.scheduler.capacity.root.default.ordering-policy: fair
+      core:fs.gs.block.size: '134217728'
+      core:fs.gs.metadata.cache.enable: 'false'
+      core:fs.gs.operation.move.enable: 'true'
+      core:hadoop.ssl.enabled.protocols: TLSv1,TLSv1.1,TLSv1.2
+      distcp:mapreduce.map.java.opts: -Xmx768m
+      distcp:mapreduce.map.memory.mb: '1024'
+      distcp:mapreduce.reduce.java.opts: -Xmx768m
+      distcp:mapreduce.reduce.memory.mb: '1024'
+      hadoop-env:HADOOP_DATANODE_OPTS: -Xmx512m
+      hdfs:dfs.datanode.address: 0.0.0.0:9866
+      hdfs:dfs.datanode.http.address: 0.0.0.0:9864
+      hdfs:dfs.datanode.https.address: 0.0.0.0:9865
+      hdfs:dfs.datanode.ipc.address: 0.0.0.0:9867
+      hdfs:dfs.namenode.handler.count: '60'
+      hdfs:dfs.namenode.http-address: 0.0.0.0:9870
+      hdfs:dfs.namenode.https-address: 0.0.0.0:9871
+      hdfs:dfs.namenode.lifeline.rpc-address: porto-final-m:8050
+      hdfs:dfs.namenode.secondary.http-address: 0.0.0.0:9868
+      hdfs:dfs.namenode.secondary.https-address: 0.0.0.0:9869
+      hdfs:dfs.namenode.service.handler.count: '30'
+      hdfs:dfs.namenode.servicerpc-address: porto-final-m:8051
+      mapred-env:HADOOP_JOB_HISTORYSERVER_HEAPSIZE: '4000'
+      mapred:mapreduce.job.maps: '57'
+      mapred:mapreduce.job.reduce.slowstart.completedmaps: '0.95'
+      mapred:mapreduce.job.reduces: '19'
+      mapred:mapreduce.jobhistory.recovery.store.class: org.apache.hadoop.mapreduce.v2.hs.HistoryServerLeveldbStateStoreService
+      mapred:mapreduce.map.cpu.vcores: '1'
+      mapred:mapreduce.map.java.opts: -Xmx2708m
+      mapred:mapreduce.map.memory.mb: '3386'
+      mapred:mapreduce.reduce.cpu.vcores: '1'
+      mapred:mapreduce.reduce.java.opts: -Xmx2708m
+      mapred:mapreduce.reduce.memory.mb: '3386'
+      mapred:mapreduce.task.io.sort.mb: '256'
+      mapred:yarn.app.mapreduce.am.command-opts: -Xmx2708m
+      mapred:yarn.app.mapreduce.am.resource.cpu-vcores: '1'
+      mapred:yarn.app.mapreduce.am.resource.mb: '3386'
+      spark-env:CLUSTER_WORKERS: '5'
+      spark-env:DATA_BASE: gs://taxi-project-noyabayazi/taxi
+      spark-env:OUTPUT_BASE: gs://taxi-project-noyabayazi/taxi/outputs
+      spark-env:RAW_TEST: gs://taxi-project-noyabayazi/taxi/raw/test.csv
+      spark-env:RAW_TRAIN: gs://taxi-project-noyabayazi/taxi/raw/train.csv
+      spark-env:RUN_ID: 20260804T060821Z-w5
+      spark-env:SPARK_DAEMON_MEMORY: 4000m
+      spark-env:SPARK_ENV: cloud
+      spark:spark.driver.maxResultSize: 4g
+      spark:spark.driver.memory: 8g
+      spark:spark.executor.cores: '2'
+      spark:spark.executor.instances: '2'
+      spark:spark.executor.memory: 6157m
+      spark:spark.executorEnv.OPENBLAS_NUM_THREADS: '1'
+      spark:spark.plugins.defaultList: com.google.cloud.dataproc.DataprocSparkPlugin
+      spark:spark.scheduler.mode: FAIR
+      spark:spark.sql.adaptive.enabled: 'true'
+      spark:spark.sql.adaptive.skewJoin.enabled: 'true'
+      spark:spark.sql.cbo.enabled: 'true'
+      spark:spark.sql.optimizer.runtime.bloomFilter.join.pattern.enabled: 'true'
+      spark:spark.sql.shuffle.partitions: '400'
+      spark:spark.ui.port: '0'
+      spark:spark.yarn.am.memory: 640m
+      yarn-env:YARN_NODEMANAGER_HEAPSIZE: '1638'
+      yarn-env:YARN_RESOURCEMANAGER_HEAPSIZE: '4000'
+      yarn-env:YARN_TIMELINESERVER_HEAPSIZE: '4000'
+      yarn:yarn.nodemanager.address: 0.0.0.0:8026
+      yarn:yarn.nodemanager.resource.cpu-vcores: '4'
+      yarn:yarn.nodemanager.resource.memory-mb: '13544'
+      yarn:yarn.resourcemanager.decommissioning-nodes-watcher.decommission-if-no-shuffle-data: 'true'
+      yarn:yarn.resourcemanager.nodemanager-graceful-decommission-timeout-secs: '86400'
+      yarn:yarn.scheduler.maximum-allocation-mb: '13544'
+      yarn:yarn.scheduler.minimum-allocation-mb: '1'
+  tempBucket: dataproc-temp-europe-west1-781309321342-ukn7ryk6
+  workerConfig:
+    diskConfig:
+      bootDiskSizeGb: 1000
+      bootDiskType: pd-standard
+    imageUri: https://www.googleapis.com/compute/v1/projects/cloud-dataproc/global/images/dataproc-2-2-deb12-20260619-045100-rc01
+    instanceNames:
+    - porto-final-w-0
+    - porto-final-w-1
+    - porto-final-w-2
+    - porto-final-w-3
+    - porto-final-w-4
+    machineTypeUri: https://www.googleapis.com/compute/v1/projects/finalproj-noyabayazi/zones/europe-west1-c/machineTypes/n2-standard-4
+    minCpuPlatform: AUTOMATIC
+    numInstances: 5
+    preemptibility: NON_PREEMPTIBLE
+labels:
+  goog-dataproc-autozone: enabled
+  goog-dataproc-cluster-create-timestamp: '1785823711'
+  goog-dataproc-cluster-name: porto-final
+  goog-dataproc-cluster-uuid: c1c8e7aa-3d34-4e52-bd4e-69da483cc2ba
+  goog-dataproc-drz-resource-uuid: cluster-c1c8e7aa-3d34-4e52-bd4e-69da483cc2ba
+  goog-dataproc-location: europe-west1
+projectId: finalproj-noyabayazi
+status:
+  state: CREATING
+  stateStartTime: '2026-08-04T06:08:31.151457Z'

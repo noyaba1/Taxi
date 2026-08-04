@@ -1,0 +1,17 @@
+
+=== EVIDENCE: cluster size (the brief requires >= 5 machines) ===
+  cluster : porto-final  (CREATING)
+  master  : 1 x n2-standard-4
+  workers : 5 x n2-standard-4
+  TOTAL   : 6 machines
+  [OK]   >= 5 machines
+
+=== EVIDENCE: the individual VMs ===
+NAME             MACHINE_TYPE   ZONE            STATUS
+porto-final-m    n2-standard-4  europe-west1-c  RUNNING
+porto-final-w-0  n2-standard-4  europe-west1-c  RUNNING
+porto-final-w-1  n2-standard-4  europe-west1-c  RUNNING
+porto-final-w-2  n2-standard-4  europe-west1-c  RUNNING
+porto-final-w-3  n2-standard-4  europe-west1-c  RUNNING
+porto-final-w-4  n2-standard-4  europe-west1-c  RUNNING
+
