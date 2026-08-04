@@ -94,10 +94,17 @@ vehicles over a year, a corridor driven many times by one driver is a habit, not
 a route.
 
 At full scale this is the difference between a real answer and a wrong one. The
-top ≥1 km and ≥3 km corridors are driven by **435 of the 442 taxis** — the whole
-fleet, unambiguously public. But every route in the ≥20 km band has ≤2 taxis,
-and the longest (26.25 km) is **2 trips from a single vehicle**. Without the
-taxi column that would have been reported as a 26 km popular corridor.
+top ≥1 km and ≥3 km corridors are driven by **438 of the 442 taxis** — the whole
+fleet, unambiguously public.
+
+The ≥20 km band is the case that proves the column earns its place, and it cuts
+both ways. It once held 20 routes that *all* had ≤2 taxis, the longest of them
+2 trips from a single vehicle — which the trip count alone would have reported
+as a 26 km popular corridor. That turned out to be the encoder starving the band
+rather than Porto lacking long corridors (`docs/FINAL_REPORT.md` §9e). After the
+fix the same band holds **100 routes at a median of 41 distinct taxis, minimum 9,
+and none at ≤2**, with the longest at **25.83 km**. The taxi column is what made
+both readings visible — first the artefact, then the correction.
 
 ---
 

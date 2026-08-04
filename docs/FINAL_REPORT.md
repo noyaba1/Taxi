@@ -824,13 +824,13 @@ Spark.
 - **Temporal:** mean overlap **0.78**, night lowest at **0.69**, midday highest
   at 0.87 — near-identical to the 200k result, so the finding is stable in
   scale, not an artefact of sample size.
-- **Cross-method:** A↔D agree strongly (A→D 0.93, D→A 0.84); C is the outlier
+- **Cross-method:** A↔D agree strongly (A→D 0.97, D→A 0.86); C is the outlier
   (0.31–0.47), as it has been at every scale.
 
 ### One claim the full run disproved
 
 The HyperLogLog justification was **wrong, and the measurement says so**: HLL is
-**4.6x slower** than exact `countDistinct` even at 1.71M trips. The argument had
+**7.26x slower** than exact `countDistinct` even at 1.71M trips. The argument had
 been "~85M (cell, taxi) pairs", but that is the *input* size; what decides
 whether a distinct-count sketch pays is *cardinality per group*, and with only
 442 taxis no cell can exceed 442 distinct values. There is no crossover to find.
