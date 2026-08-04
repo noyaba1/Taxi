@@ -281,7 +281,6 @@ submit anomaly_analysis.py
 submit evaluation.py
 submit validate_holdout.py    # generalisation check on unseen trips
 submit temporal_analysis.py   # do popular corridors depend on the hour?
-submit rider_mix.py           # how did the trips using each corridor BEGIN?
 submit visualization.py
 
 # Approximate structures LAST. --approx-only skips the exact groupBy, but the
@@ -289,6 +288,15 @@ submit visualization.py
 # expensive stage at full scale. It stays because demonstrating the sketches at
 # scale is an assignment requirement -- but by now the deliverables are in GCS.
 submit route_mining_approx.py --approx-only
+
+# Rider mix LAST, and deliberately so. `set -e` means a failed job aborts this
+# script and the trap deletes the cluster, so stage ORDER decides what a failure
+# costs. This one reads CALL_TYPE against the finished corridor tables: it is an
+# extra question, not a deliverable, and it is the newest code here -- six passes
+# over the full trip set, never run above sample scale. Placed earlier it could
+# take the map and the sketch comparison down with it, having produced nothing.
+# Placed here, the worst it can cost is itself.
+submit rider_mix.py           # how did the trips using each corridor BEGIN?
 
 # The window-enumeration family (exact / closed / maximal-frequent) shares one
 # O(n^2) support table. It is the ground truth the other methods are validated
