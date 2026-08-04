@@ -326,6 +326,27 @@ def build():
                 "anomalous routes reported alongside the deliverable.",
              2.35, size=13, w=3.4)
 
+    # 6c -- the long corridors alone, on named roads
+    longmap = ROOT / "docs" / "assets" / "porto_corridors_long.png"
+    if longmap.exists():
+        s = blank(prs)
+        eyebrow(s, "Method D alone, ≥10 km and ≥20 km", color=S1)
+        headline(s, "The long corridors are\nPorto's motorway network.", size=32)
+        # Sized off the HEIGHT: this shot is nearly square, so fixing the width
+        # (as the wider map above does) pushes it off the bottom of the slide.
+        picture(s, "porto_corridors_long.png", Inches(5.3), Inches(0.95), h=Inches(6.1))
+        body(s, "The bands the encoding fix rescued — ≥10 km went from 22 routes to 100, "
+                "≥20 km from 0 to 100 — drawn on their own.\n\n"
+                "They trace the roads a Porto driver would name:\n\n"
+                "    ·  VCI — the inner ring around the centre\n"
+                "    ·  A28 Litoral Norte — the coastal axis north\n"
+                "    ·  A4 Trás-os-Montes — the eastern arm\n"
+                "    ·  Via Norte — the spine up to Maia\n\n"
+                "Identified by reading the basemap beneath the corridors, not by "
+                "reverse geocoding — the pipeline outputs cell sequences and has no "
+                "notion of a road name.",
+             2.15, size=13, w=3.6)
+
     # 7 -- is it trustworthy?
     s = blank(prs)
     eyebrow(s, "Popular corridor, or one driver's habit?", color=S3)
