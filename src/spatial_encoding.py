@@ -28,11 +28,36 @@ them (config.EXCLUDE_ANOMALOUS) and report exactly how many, per reason.
 The anomaly STUDY (M11) still runs on the unfiltered feature table -- dropping
 outliers from the route mining and analysing them are different jobs.
 
+GAPS THE SAMPLING CLOCK PUNCHES ARE REPAIRED HERE
+-------------------------------------------------
+Dropping corrupt trips is only half the problem. GPS is sampled every 15 s, so
+above ~32 km/h the vehicle crosses a res-9 cell between two fixes and that cell
+is simply never observed. The chain reads A, C with B missing -- and since a
+sub-route only matches when every cell matches, two taxis on the same road fail
+to match unless their holes land in the same places.
+
+MEASURED before the fix: 95.1% of consecutive pairs were adjacent, i.e. 4.9%
+were holes. Compounded over a window that is 0.951^(L-1): 86% of 1 km windows
+survive intact but only 23% at 10 km and 5.5% at 20 km. The long length bands
+were being emptied by the encoder, not by Porto.
+
+`cells.interpolate_gaps` reconstructs any discontinuity SHORTER than
+config.max_cell_hop_km() -- below that bound a retained vehicle demonstrably
+drove it, so the missing cells are recoverable with h3.h3_line. Longer
+discontinuities are left for the miners to split at, because there we do not
+know which way the vehicle went. Same threshold, opposite treatment; between
+them they cover every case, so no jump is ever admitted as road.
+
 OUTPUT per trip:
     h3_seq_raw        one cell per GPS point (order preserved)
-    h3_seq_compact    consecutive duplicates removed (staying in a cell != route)
+    h3_seq_compact    consecutive duplicates removed (staying in a cell != route),
+                      THEN gap-filled -- so it is contiguous except at genuine
+                      gaps. This is the column every miner reads; repairing it
+                      here is what keeps one representation feeding all four
+                      methods.
     n_cells_raw       len(raw)
-    n_cells_compact   len(compact)
+    n_cells_compact   len(compact, after gap fill)
+    n_cells_filled    cells reconstructed by interpolation (0 on a clean trip)
     compression_ratio raw / compact (how much idling/dwelling we collapsed)
     encoded_len_km    sum of Haversine between consecutive COMPACT cell centres
     max_hop_km        largest gap between consecutive compact cells (a residual
@@ -52,7 +77,7 @@ import pandas as pd
 from pyspark.sql import functions as F, types as T
 from pyspark.sql.pandas.functions import pandas_udf
 
-from src import cli, config, storage
+from src import cells, cli, config, storage
 from src.feature_engineering import FLAG_COLS
 from src.spark_session import get_spark
 
@@ -68,6 +93,7 @@ _ENC_SCHEMA = T.StructType([
     T.StructField("h3_seq_compact", T.ArrayType(T.StringType())),
     T.StructField("n_cells_raw", T.IntegerType()),
     T.StructField("n_cells_compact", T.IntegerType()),
+    T.StructField("n_cells_filled", T.IntegerType()),
     T.StructField("compression_ratio", T.DoubleType()),
     T.StructField("encoded_len_km", T.DoubleType()),
     T.StructField("max_hop_km", T.DoubleType()),
@@ -118,6 +144,7 @@ def make_encoder_udf(resolution: int, grid: str = "h3"):
                 cols["h3_seq_compact"].append(None)
                 cols["n_cells_raw"].append(0)
                 cols["n_cells_compact"].append(0)
+                cols["n_cells_filled"].append(0)
                 cols["compression_ratio"].append(None)
                 cols["encoded_len_km"].append(None)
                 cols["max_hop_km"].append(None)
@@ -126,6 +153,16 @@ def make_encoder_udf(resolution: int, grid: str = "h3"):
             raw = (_h3_cells(pts, resolution) if grid == "h3"
                    else _geohash_cells(pts, resolution))
             comp = _compact(raw)
+
+            # Repair the holes the 15 s sampling clock punches, by resampling
+            # the GPS polyline rather than patching the cell chain. h3 only:
+            # the geohash path exists solely for the grid comparison, and
+            # densifying it would change what that comparison measures.
+            n_before = len(comp)
+            if grid == "h3":
+                dense = cells.densify_points(pts, resolution)
+                comp = _compact(_h3_cells(dense, resolution))
+            n_filled = len(comp) - n_before
 
             # Encoded length = sum of centre-to-centre hops; also keep the LARGEST
             # single hop, which is what exposes a residual GPS gap.
@@ -140,6 +177,7 @@ def make_encoder_udf(resolution: int, grid: str = "h3"):
             cols["h3_seq_compact"].append(comp)
             cols["n_cells_raw"].append(len(raw))
             cols["n_cells_compact"].append(len(comp))
+            cols["n_cells_filled"].append(n_filled)
             cols["compression_ratio"].append(len(raw) / len(comp) if comp else None)
             cols["encoded_len_km"].append(length)
             cols["max_hop_km"].append(biggest)

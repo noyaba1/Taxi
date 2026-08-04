@@ -38,7 +38,7 @@ STAGES = [
     ("Phase 1  clean", "src.clean_data", [], ALL),
     ("Phase 2  features", "src.feature_engineering", [], ALL),
     ("Phase 2  statistics", "src.summarize_features", [], ALL),
-    ("Phase 4  H3 encoding", "src.spatial_encoding", [], ALL),
+    ("Phase 3  H3 encoding", "src.spatial_encoding", [], ALL),
     ("M5  exact mining (baseline)", "src.route_mining_exact", [], ("sample",)),
     ("M6  closed sub-routes", "src.route_mining_closed", [], ("sample",)),
     ("M7  approx vs exact", "src.route_mining_approx", [], ("sample",)),

@@ -33,7 +33,7 @@ from pyspark.sql import functions as F
 
 from src import cells as cells_mod
 from src import cli, config, storage
-from src.route_mining_exact import DELIM, emit_windows
+from src.route_mining_exact import DELIM, MIN_SUPPORT, emit_windows
 from src.spark_session import get_spark
 
 log = cli.setup_logging("m7")
@@ -162,7 +162,13 @@ def main(scale: str, approx_only: bool) -> None:
 
     with cli.stage("m7_approx", scale, log) as st:
         enc = spark.read.parquet(paths["encoded"]).select("TRIP_ID", "h3_seq_compact")
-        windows = emit_windows(enc)
+        # Drop windows that hit the length cap BEFORE either path sees them: a
+        # truncated window's `length_km` is the cap rather than a measurement
+        # (see route_mining_exact's docstring). Filtering here rather than in
+        # each path keeps the sketches and the exact baseline counting the same
+        # population -- which is the only reason their comparison means anything.
+        windows = emit_windows(enc).filter(
+            ~F.coalesce(F.col("truncated"), F.lit(False)))
 
         # ---------- APPROX (Space-Saving + Count-Min via mapPartitions + merge) ----------
         # Deliberately NOT cached: one streaming pass, memory bounded by the
@@ -190,8 +196,10 @@ def main(scale: str, approx_only: bool) -> None:
             t_exact = time.time() - t0
             exact_top = {}
             for L in THRESHOLDS:
-                rows = (agg.filter(F.col("length_km") >= L)
-                        .orderBy(F.col("support").desc(), F.col("length_km").desc())
+                rows = (agg.filter((F.col("length_km") >= L)
+                                   & (F.col("support") >= MIN_SUPPORT))
+                        .orderBy(F.col("support").desc(), F.col("length_km").desc(),
+                                 F.col("subroute").asc())
                         .limit(TOP_K).collect())
                 exact_top[L] = [r["subroute"] for r in rows]
             # exact support+length for every approx candidate (error metrics + CSV)
@@ -235,7 +243,15 @@ def main(scale: str, approx_only: bool) -> None:
 
         csv_rows = []
         for L in THRESHOLDS:
-            a = cand[L][:TOP_K]
+            # Same popularity floor M5 applies, on the SKETCH side too. The
+            # sketch's own upper bound is the right instrument: `ub < MIN_SUPPORT`
+            # means the route cannot be popular even under the most generous
+            # reading of the estimate, so dropping it can never discard a genuine
+            # heavy hitter. Without this the >=40 km band shipped 100 rows whose
+            # every bound was 1 -- and the top ones were a parked taxi's GPS
+            # jitter oscillating across one cell boundary, accumulating 42 km of
+            # "length" from 117 cells that were really two.
+            a = [c for c in cand[L] if c[3] >= MIN_SUPPORT][:TOP_K]
             ss_ae, ss_re, cms_ae = [], [], []
             for rank, (k, est, lb, ub) in enumerate(a, 1):
                 ex_sup, _ = (info or {}).get(k, (None, None))

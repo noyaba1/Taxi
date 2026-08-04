@@ -40,3 +40,13 @@ cloud_outputs/
 
 # Generated deck (rebuild: python scripts/build_deck_charts.py && python scripts/build_deck.py)
 build/
+
+# The submitted results bundle IS tracked. The `*.csv` rule above (raw lecturer
+# data) also swallowed the route tables, which is why earlier archives shipped
+# with no results in them at all -- negate it for this directory only.
+!results/
+!results/**/*.csv
+
+# Local run logs
+*.log
+sweep.log

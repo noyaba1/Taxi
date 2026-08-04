@@ -199,6 +199,13 @@ def mine_bucket(rows, min_sup, min_len_km, max_len_km):
         length = cells_mod.path_length_km(cand)
         if length < min_len_km or length > max_len_km:
             continue
+        # A candidate that keeps re-entering the same cell is a vehicle
+        # circling, and `length` above is the sum of that circling. Measured at
+        # 1.71M trips this removed all 10 members of the >=40 km band -- each
+        # support 2 from ONE taxi, one of them reusing 39% of its cells to claim
+        # 44 km -- and nothing at all from the 500 routes in the 1-20 km bands.
+        if not cells_mod.revisits_ok(cand):
+            continue
 
         # Best RIGHT extension: the strongest descendant interval. Descendants
         # are longer substrings sharing this prefix, i.e. exactly the one-cell
@@ -440,7 +447,8 @@ def main(scale: str, x_pct: float, calibrate_x: bool) -> None:
             ms, xp, m = chosen[L]
             cand = m.filter(F.col("length_km") >= L)
             n_at_l = cand.count()
-            top = (cand.orderBy(F.col("support").desc(), F.col("length_km").desc())
+            top = (cand.orderBy(F.col("support").desc(), F.col("length_km").desc(),
+                                 F.col("subroute").asc())
                    .limit(TOP_K).collect())
             top_sup = top[0]["support"] if top else 0
             top_taxis = top[0]["support_taxis"] if top else 0

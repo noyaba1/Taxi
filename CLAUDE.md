@@ -89,6 +89,30 @@ Two layers: `spatial_encoding` drops `is_anomalous` trips, and every miner split
 trajectories at any hop above `config.max_cell_hop_km()` (~1.18 km at res 9 =
 retained-speed limit + cell quantisation, *derived*, not tuned).
 
+**1b. …but a discontinuity BELOW that bound is undersampling, and gets filled.**
+The same threshold answers both questions, in opposite directions. GPS ticks
+every 15 s, so above ~32 km/h the vehicle crosses a res-9 cell between two fixes
+and that cell is never recorded. Measured: only **95.1% of consecutive cells
+were adjacent**. A window matches only if *every* cell matches, so clean windows
+decayed as 0.951^(L-1) — 86% at 1 km but **23% at 10 km and 5.5% at 20 km**, and
+two taxis matched only where their holes coincided. That is what hollowed out
+the long bands; it was the encoder, not Porto.
+
+`cells.densify_points` resamples the GPS polyline (not the cell chain) so no
+cell can be stepped over, giving **100% adjacency for +4.6% cells**. Measured
+effect at sample scale: method D's ≥10 km band went **18 → 100 routes**, ≥20 km
+**0 → 13**, and median support roughly doubled at 3–5 km — support is
+independent of length measurement, so that is genuine extra matching.
+**≥40 km stayed empty**, which is the load-bearing check that this repaired
+rather than inflated.
+
+Repair in *geographic* space, never in grid space: patching with
+`h3.h3_line(A, C)` picks the wrong intermediate cell 5 times in 16, restoring
+contiguity while leaving the two taxis on different chains. Densification is
+bounded by `max_cell_hop_km` and therefore never invents a path across a real
+gap — it fills what a retained vehicle demonstrably drove, and `split_at_gaps`
+still cuts everything beyond.
+
 **2. Support floors are ABSOLUTE, not percentages.** A percentage floor is
 scale-dependent the wrong way: 0.01% is 2 trips on the sample but 172 at 1.71M,
 so the long length bands empty out *as data grows*. `SUPPORT_MIN_SUP_GRID` is
@@ -136,9 +160,11 @@ matches.
 - **≥40 km is empty at every scale.** Porto has no 40 km stretch two taxis
   repeat. A power law fitted on 5k–755k predicted 26–28 km at 1.71M; measured
   **26.25 km**. Don't "fix" this.
-- **≥20 km is hollow.** It populates, but all 20 routes have ≤2 taxis and the
-  longest is 2 trips from *one* vehicle. Length and confidence move in opposite
-  directions — hence the `support_taxis` column.
+- **≥20 km is thin — but re-measure before quoting a number.** The published
+  figures predate gap densification (guard 1b), which was worth 18 → 100 routes
+  at ≥10 km on the sample. Length and confidence still move in opposite
+  directions — hence the `support_taxis` column — but "hollow" was partly the
+  encoder starving the band, so the old counts understate it.
 - **HyperLogLog is 4.6× slower than exact here.** Group cardinality is capped by
   the 442-taxi fleet, so the sketch never pays. Kept as a measured negative
   result.
@@ -163,10 +189,23 @@ and the `.docx` developer guide are built. Do not re-plan any of this.
    * **M7 `--approx-only`** — every row shipped a blank `length_km`. Fixed by
      recomputing from the sub-route key.
 
-   `ONLY="route_mining_clustering.py route_mining_approx.py"` re-runs just these.
-2. **A `results/` bundle.** `outputs/` is gitignored, so the archive contains no
+   `ONLY="route_mining_clustering.py route_mining_approx.py"` re-runs just these
+   — but note `ONLY` is read by `scripts/dataproc_submit.sh` ONLY.
+   `run_pipeline` ignores it silently, so the same command run locally is a
+   full-pipeline run wearing a disguise.
+2. **EVERY published number now predates gap densification** (guard 1b), not just
+   the two items above. Re-measure before quoting anything from FINAL_REPORT.
+3. **Oscillation windows are only hidden, not fixed.** `_compact` drops
+   *consecutive* duplicates, so a parked taxi whose GPS jitters across one cell
+   boundary still encodes `A>B>A>B>…`, and the window miner counts every bounce
+   as travel. Measured: one such window claimed **42.2 km from 117 cells that
+   were really two.** The support floor (item below) keeps them out of the graded
+   lists because no two trips jitter identically — but that is luck, not a
+   guard. A distinct-cells/total-cells ratio test on each window would be the
+   real fix.
+4. **A `results/` bundle.** `outputs/` is gitignored, so the archive contains no
    route tables at all — nothing in it is reproducible without bucket access.
-3. **Moodle submission** — one student submits, links all members.
+5. **Moodle submission** — one student submits, links all members.
 
 `gcloud`/`gsutil` are denied in `.claude/settings.json` on purpose: the cloud run
 spends real budget and should be typed by a person who means it.

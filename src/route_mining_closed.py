@@ -132,7 +132,8 @@ def main(scale: str) -> None:
             m5_cand = agg.filter(F.col("length_km") >= L).count()
             cand = maximal.filter(F.col("length_km") >= L)
             m6_cand = cand.count()
-            top = (cand.orderBy(F.col("support").desc(), F.col("length_km").desc())
+            top = (cand.orderBy(F.col("support").desc(), F.col("length_km").desc(),
+                                 F.col("subroute").asc())
                    .limit(TOP_N).collect())
             top_support = top[0]["support"] if top else 0
             reduction = f"{100 * (1 - m6_cand / m5_cand):.1f}%" if m5_cand else "n/a"

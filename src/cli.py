@@ -87,6 +87,23 @@ def _peak_rss_mb() -> float:
     return peak / (1024 * 1024) if sys.platform == "darwin" else peak / 1024
 
 
+def _cluster_tags() -> dict:
+    """
+    Cluster shape + run identity, for separating rows of a scaling sweep.
+
+    Empty on a laptop: `cluster_workers` absent means "not a cluster run", which
+    is exactly what an analysis should treat it as rather than guessing 0 or 1.
+    """
+    tags = {}
+    workers = os.environ.get("CLUSTER_WORKERS")
+    run_id = os.environ.get("RUN_ID")
+    if workers and workers.isdigit():
+        tags["cluster_workers"] = int(workers)
+    if run_id:
+        tags["run_id"] = run_id
+    return tags
+
+
 @contextlib.contextmanager
 def stage(name: str, scale: str, log: logging.Logger | None = None):
     """
@@ -119,6 +136,13 @@ def stage(name: str, scale: str, log: logging.Logger | None = None):
             "ok": ok,
             "wall_s": round(elapsed, 2),
             "peak_rss_mb": round(_peak_rss_mb(), 1),
+            # Which CLUSTER produced this row. timings.jsonl APPENDS, and every
+            # cloud run writes to the same gs:// file, so without these two the
+            # rows from a 2-worker run and a 20-worker run are indistinguishable
+            # -- and a speedup curve cannot be recovered afterwards from data
+            # that was already paid for. Set by dataproc_submit.sh; absent
+            # locally, which is itself the right answer for a laptop run.
+            **_cluster_tags(),
             **metrics,
         }
         log.info("END   %s in %.1fs (%s)", name, elapsed, "ok" if ok else "FAILED")

@@ -321,6 +321,24 @@ ACTIVITY_ZONES_TOP = 50      # number of activity-zone cells to report
 SA_PREFIX_CELLS = 3
 SA_MAX_CELLS = 200           # truncate each suffix (bounds per-suffix memory)
 
+# --- the revisit guard: a corridor is a path, not a loop ---
+# Length is accumulated hop by hop, so a vehicle that oscillates across one cell
+# boundary (parked with jittering GPS, or circling) racks up "route length" it
+# never travelled. `_compact` only removes CONSECUTIVE duplicates, so A>B>A>B
+# survives it untouched.
+#
+# MEASURED at 1.71M trips, and the separation is total. Across the 500 routes in
+# the 1-20 km bands -- every one of them fleet-wide and plausible -- NO cell ever
+# appears more than TWICE in a sub-route. Across the 10 routes that appeared in
+# the >=40 km band, EVERY one repeats some cell three times, every one has
+# support 2 from a single taxi, and the worst reuses 39% of its cells to claim
+# 44 km. A limit of 2 removes 10 of 10 artifacts and 0 of 500 real corridors.
+#
+# Two visits is deliberate, not slack: driving a street and returning along it is
+# ordinary taxi behaviour. Three visits to the same ~200 m hexagon inside ONE
+# sub-route is not a corridor.
+MAX_CELL_REVISITS = int(os.environ.get("MAX_CELL_REVISITS", "2"))
+
 # --- anomalous-route analysis ---
 ANOMALY_PCT = 0.99           # percentile fence for statistical outliers
 ANOMALY_METRO_MARGIN = 0.05  # deg beyond metro bbox before a route counts as drift

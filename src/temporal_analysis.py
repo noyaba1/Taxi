@@ -59,7 +59,8 @@ def _corridors(routes_df, min_sup, min_len_km, top_n):
     """Top maximal-frequent corridors as [(cellset, support, length_km)]."""
     rows = (maximal_at(routes_df, min_sup)
             .filter(F.col("length_km") >= min_len_km)
-            .orderBy(F.col("support").desc(), F.col("length_km").desc())
+            .orderBy(F.col("support").desc(), F.col("length_km").desc(),
+                                 F.col("subroute").asc())
             .limit(top_n).collect())
     return [(frozenset(r["subroute"].split(DELIM)), r["support"],
              r["length_km"], r["subroute"]) for r in rows]

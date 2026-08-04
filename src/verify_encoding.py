@@ -87,11 +87,22 @@ def main(scale: str) -> None:
     ok &= c3
     print(f"[{'OK' if c3 else 'FAIL'}] invalid H3 cells across all rows: {invalid} (must be 0)")
 
-    # 4. compact length <= raw length
-    bad_len = enc.filter(F.col("n_cells_compact") > F.col("n_cells_raw")).count()
-    c4 = (bad_len == 0)
+    # 4. compaction still only ever REMOVES cells.
+    # `n_cells_raw` is one cell per GPS fix, but `n_cells_compact` is counted
+    # after gap densification, which legitimately ADDS the cells the 15 s
+    # sampling clock stepped over -- so a plain compact <= raw now fails on fast
+    # trips (measured: 43 on the sample) without anything being wrong. Subtract
+    # what densification contributed and the original guarantee is recovered
+    # exactly: before it ran, compaction was a subsequence of raw.
+    pre_densify = F.col("n_cells_compact") - F.coalesce(F.col("n_cells_filled"), F.lit(0))
+    bad_len = enc.filter(pre_densify > F.col("n_cells_raw")).count()
+    bad_fill = enc.filter(F.coalesce(F.col("n_cells_filled"), F.lit(0)) < 0).count()
+    c4 = (bad_len == 0) and (bad_fill == 0)
     ok &= c4
-    print(f"[{'OK' if c4 else 'FAIL'}] rows with compact>raw: {bad_len} (must be 0)")
+    print(f"[{'OK' if bad_len == 0 else 'FAIL'}] rows with compact>raw (pre-densify): "
+          f"{bad_len} (must be 0)")
+    print(f"[{'OK' if bad_fill == 0 else 'FAIL'}] rows where densifying removed cells: "
+          f"{bad_fill} (must be 0)")
 
     # 5. sample cells map to plausible Porto coordinates
     print("\n=== sample: first compact cell -> centre (must be inside Porto bbox) ===")

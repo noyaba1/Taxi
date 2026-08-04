@@ -148,7 +148,8 @@ def main(scale: str) -> None:
             min_sup, x, maximal = chosen[L]
             cand = maximal.filter(F.col("length_km") >= L)
             n_at_l = cand.count()
-            top = (cand.orderBy(F.col("support").desc(), F.col("length_km").desc())
+            top = (cand.orderBy(F.col("support").desc(), F.col("length_km").desc(),
+                                 F.col("subroute").asc())
                    .limit(TOP_K).collect())
             top_support = top[0]["support"] if top else 0
             longest = max((r["length_km"] for r in top), default=0.0)

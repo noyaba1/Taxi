@@ -9,8 +9,17 @@ match is strong evidence of correctness.
 Checks:
   1. every reported route satisfies length_km >= its min_len threshold
   2. support in [1, n_trips]
-  3. for sampled top routes, brute-force trip-containment support == reported
+  3. every reported route is actually POPULAR (support >= 2) and is not a
+     truncated window reporting the length cap as its length
+  4. for sampled top routes, brute-force trip-containment support == reported
      support (delimiter-wrapped so cell boundaries can't partial-match)
+
+WHY CHECK 3 EXISTS. Checks 1 and 2 both PASSED on a >=40 km band containing 100
+rows that were each a single trip's own path, cut off at the 60 km enumeration
+cap -- `length_km = 60.0` clears any threshold, and support 1 is inside
+[1, n_trips]. The table therefore advertised 100 popular 40 km sub-routes while
+the generated report said the band was empty. A bound that every degenerate row
+satisfies is not a bound.
 
 Run:
     python -m src.verify_route_mining --sample
@@ -61,6 +70,15 @@ def main(scale: str) -> None:
     ok &= c1 and c2
     print(f"[{'OK' if c1 else 'FAIL'}] all routes length_km >= min_len : {len(bad_len)} violations")
     print(f"[{'OK' if c2 else 'FAIL'}] all support in [1, n_trips]     : {len(bad_sup)} violations")
+
+    # --- 3: the reported routes must be POPULAR, and measured rather than capped ---
+    cap = float(config.MAX_SUBROUTE_KM)
+    lone = [r for r in rows if int(r["support"]) < 2]
+    capped = [r for r in rows if float(r["length_km"]) >= cap - 1e-6]
+    c3a, c3b = len(lone) == 0, len(capped) == 0
+    ok &= c3a and c3b
+    print(f"[{'OK' if c3a else 'FAIL'}] every route shared by >=2 trips  : {len(lone)} violations")
+    print(f"[{'OK' if c3b else 'FAIL'}] no route reports the {cap:g}km cap  : {len(capped)} violations")
 
     # --- 3: independent brute-force support for a spread of top routes ---
     # Pick top-1 and a middle route for the small thresholds that have real support.

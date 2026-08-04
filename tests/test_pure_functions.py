@@ -84,6 +84,140 @@ def test_split_at_gaps_drops_stranded_single_cells():
     assert all(len(s) >= 2 for s in segs)
 
 
+# -------- gap densification (the sampling-hole repair, split's sibling) -------
+def _road(lat1=41.15, lat2=41.20, lon=-8.61, n=40):
+    """A straight stretch of road as a GPS polyline: [lon, lat] pairs."""
+    return [[lon, lat1 + (lat2 - lat1) * i / (n - 1)] for i in range(n)]
+
+
+def _cells_of(pts):
+    from src.spatial_encoding import _compact
+    return _compact([h3.geo_to_h3(p[1], p[0], config.H3_RESOLUTION) for p in pts])
+
+
+def test_densify_leaves_a_finely_sampled_road_untouched():
+    pts = _road(41.15, 41.16, n=200)          # steps well under a cell
+    assert cells_mod.densify_points(pts) == pts
+
+
+def test_densify_makes_every_cell_hop_adjacent():
+    """The property the miners rely on: no cell can be stepped over."""
+    seq = _cells_of(cells_mod.densify_points(_road(n=12)))
+    assert all(h3.h3_distance(a, b) == 1 for a, b in zip(seq[:-1], seq[1:]))
+
+
+def test_densify_refuses_to_bridge_a_real_gap():
+    """
+    Beyond the hop bound we do not know which way the vehicle went, so inventing
+    a path would be the exact fabrication the gap rule exists to prevent.
+    """
+    far = [[-8.61, 41.15], [-8.61, 41.28]]     # ~14 km in one 15 s step
+    assert cells_mod.densify_points(far) == far
+    # ...and split_at_gaps still cuts there, so the two functions partition
+    # every discontinuity between them.
+    assert len(cells_mod.split_at_gaps(_cells_of(far))) == 0
+
+
+def test_densify_does_not_invent_distance():
+    """
+    The asymmetry matters. Under-recovering is benign -- a corner-clipped cell
+    the resampling stepped past costs a little length. INVENTING length is the
+    failure that put phantom 40 km routes in the graded lists, so the upper
+    bound is the tight one: a resampled sparse trace must never measure longer
+    than the same road sampled continuously.
+    """
+    sparse = cells_mod.path_length_km(_cells_of(cells_mod.densify_points(_road(n=6))))
+    truth = cells_mod.path_length_km(_cells_of(_road(n=4000)))
+    assert sparse <= truth * 1.01, "resampling invented distance"
+    assert sparse >= truth * 0.90, "resampling lost more than a corner clip"
+
+
+def test_two_taxis_sampled_out_of_phase_encode_identically():
+    """
+    The whole point. The same road sampled on different phases yielded different
+    cell strings, so substring matching found no shared sub-route -- which is
+    what emptied the long length bands. Geographic densification removes the
+    phase dependence entirely: both taxis drove the same road, so both encode
+    to the same cells.
+    """
+    road = _road(n=400)
+    taxi_a = road[::11]                        # two vehicles, same street,
+    taxi_b = road[3::11]                       # different sampling phase
+
+    assert _cells_of(taxi_a) != _cells_of(taxi_b), "phases must differ before repair"
+
+    seq_a = _cells_of(cells_mod.densify_points(taxi_a))
+    seq_b = _cells_of(cells_mod.densify_points(taxi_b))
+    # Each is now a contiguous run along the same road, so the shorter is a
+    # CONTIGUOUS SUBSTRING of the longer -- exactly the relation miners test.
+    short, long = sorted((seq_a, seq_b), key=len)
+    assert ">".join(short) in ">".join(long)
+
+
+# ---------------- the revisit guard (a corridor is a path, not a loop) --------
+def test_revisits_allows_a_straight_route():
+    assert cells_mod.revisits_ok(_line())
+
+
+def test_revisits_allows_driving_a_street_and_coming_back():
+    """Two visits is ordinary taxi behaviour and must not be rejected."""
+    out = _line()
+    assert cells_mod.revisits_ok(out + out[::-1])
+
+
+def test_revisits_rejects_oscillation():
+    """
+    The failure this exists for: a parked taxi whose GPS jitters across one cell
+    boundary accumulates length it never travelled, and `_compact` does not
+    remove it because the duplicates are not CONSECUTIVE.
+    """
+    a, b = _line()[0], _line()[1]
+    assert not cells_mod.revisits_ok([a, b] * 10)
+
+
+def test_revisits_threshold_is_the_measured_one():
+    """A cell three times is what separated every artifact from every real route."""
+    a, b, c = _line()[:3]
+    assert cells_mod.revisits_ok([a, b, c, b, a])          # each seen <= 2
+    assert not cells_mod.revisits_ok([a, b, c, b, a, b])   # b seen 3x
+
+
+def test_revisits_empty_is_fine():
+    assert cells_mod.revisits_ok([])
+
+
+# ---------------- Karp-Flatt / Amdahl (the scaling study's arithmetic) --------
+def test_amdahl_recovers_a_known_serial_fraction():
+    """
+    Seeded with a KNOWN answer, because every number in a speedup table looks
+    plausible in isolation. An inverted form of this formula reported 96.2% on
+    exactly this input (true value 3.85%) and a 1.0x ceiling next to a measured
+    6.3x speedup.
+    """
+    from src.experiment_cluster_scaling import amdahl_serial_fraction
+
+    serial, parallel, base_w = 12.0, 300.0, 2
+    for w in (5, 10, 16):
+        t_base = serial + parallel
+        t_w = serial + parallel * (base_w / w)
+        p = amdahl_serial_fraction(t_base / t_w, w / base_w)
+        assert p == pytest.approx(serial / (serial + parallel), rel=0.02)
+
+
+def test_amdahl_is_silent_where_it_has_nothing_to_say():
+    from src.experiment_cluster_scaling import amdahl_serial_fraction
+
+    assert amdahl_serial_fraction(1.0, 1.0) is None      # no extra machines
+    assert amdahl_serial_fraction(4.0, 2.0) is None      # superlinear, not Amdahl
+    assert amdahl_serial_fraction(0.0, 2.0) is None      # degenerate
+
+
+def test_amdahl_perfect_scaling_is_zero_serial():
+    from src.experiment_cluster_scaling import amdahl_serial_fraction
+
+    assert amdahl_serial_fraction(4.0, 4.0) == pytest.approx(0.0, abs=1e-9)
+
+
 def test_path_length_matches_cumulative():
     cells = _line()
     assert cells_mod.path_length_km(cells) == pytest.approx(

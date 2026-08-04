@@ -38,6 +38,20 @@ GEOHASH_VER="${GEOHASH_VER:-0.8.5}"
 # Default init timeout is 10m. Copying ~2 MB of wheels from GCS takes seconds,
 # but a slow node should not roll back the whole cluster.
 INIT_TIMEOUT="${INIT_TIMEOUT:-15m}"
+# Budget backstop, and the third independent one -- because the other two each
+# have a hole. The EXIT trap deletes on a clean exit, but not if the shell is
+# SIGKILLed, the laptop sleeps, or Cloud Shell times out. `--max-idle 30m` only
+# fires when the cluster is IDLE, so a job that hangs rather than finishing
+# keeps 6 VMs billing indefinitely -- it is precisely the runaway case that is
+# not covered. `--max-age` is absolute: the cluster dies at this age whatever
+# state it is in. A full run measured ~60 min, so 4h is ~4x headroom and still
+# caps the damage at a few dollars instead of a weekend.
+MAX_AGE="${MAX_AGE:-4h}"
+# Stamped into every timings.jsonl row alongside WORKERS, so a scaling sweep is
+# recoverable afterwards. timings.jsonl appends and all runs share one gs://
+# file, so without a run id the rows of two same-sized runs merge into one
+# indistinguishable heap -- and re-measuring means paying again.
+RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-w$WORKERS}"
 # `gcloud dataproc jobs submit` runs the driver in CLIENT mode, on the master.
 # DataProc's default driver heap there is ~4g, but evaluation and visualization
 # collect to the driver and the local --full run needed SPARK_DRIVER_MEM=10g.
@@ -180,11 +194,11 @@ trap 'echo "== deleting cluster =="; \
 gcloud dataproc clusters create "$CLUSTER" --region "$REGION" \
   --master-machine-type n2-standard-4 --num-masters 1 \
   --worker-machine-type n2-standard-4 --num-workers "$WORKERS" \
-  --image-version "$IMAGE" --max-idle 30m \
+  --image-version "$IMAGE" --max-idle 30m --max-age "$MAX_AGE" \
   --initialization-actions "$DATA/scripts/init_offline_deps.sh" \
   --initialization-action-timeout "$INIT_TIMEOUT" \
   --metadata WHEELHOUSE_URI="$WHEELHOUSE" \
-  --properties="^;^spark:spark.sql.adaptive.enabled=true;spark:spark.sql.adaptive.skewJoin.enabled=true;spark:spark.sql.shuffle.partitions=400;spark:spark.driver.memory=$DRIVER_MEM;spark:spark.driver.maxResultSize=4g;spark-env:SPARK_ENV=cloud;spark-env:DATA_BASE=$DATA;spark-env:RAW_TRAIN=$DATA/raw/train.csv;spark-env:RAW_TEST=$DATA/raw/test.csv;spark-env:OUTPUT_BASE=$OUT"
+  --properties="^;^spark:spark.sql.adaptive.enabled=true;spark:spark.sql.adaptive.skewJoin.enabled=true;spark:spark.sql.shuffle.partitions=400;spark:spark.driver.memory=$DRIVER_MEM;spark:spark.driver.maxResultSize=4g;spark-env:SPARK_ENV=cloud;spark-env:DATA_BASE=$DATA;spark-env:RAW_TRAIN=$DATA/raw/train.csv;spark-env:RAW_TEST=$DATA/raw/test.csv;spark-env:OUTPUT_BASE=$OUT;spark-env:CLUSTER_WORKERS=$WORKERS;spark-env:RUN_ID=$RUN_ID"
 
 # Env for the EXECUTORS. OUTPUT_BASE is a gs:// path: every report and CSV goes
 # through src/storage.py, which writes to Hadoop FS when the path has a URI
@@ -199,7 +213,7 @@ gcloud dataproc clusters create "$CLUSTER" --region "$REGION" \
 # sources (under `set -a`) for the client-mode driver -- so it works in both
 # modes and needs no per-job repetition.
 X="spark.executorEnv"
-COMMON="SPARK_ENV=cloud,DATA_BASE=$DATA,RAW_TRAIN=$DATA/raw/train.csv,RAW_TEST=$DATA/raw/test.csv,OUTPUT_BASE=$OUT"
+COMMON="SPARK_ENV=cloud,DATA_BASE=$DATA,RAW_TRAIN=$DATA/raw/train.csv,RAW_TEST=$DATA/raw/test.csv,OUTPUT_BASE=$OUT,CLUSTER_WORKERS=$WORKERS,RUN_ID=$RUN_ID"
 ENVPROPS=""
 for kv in ${COMMON//,/ }; do
   ENVPROPS="${ENVPROPS:+$ENVPROPS,}$X.$kv"

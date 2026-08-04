@@ -29,6 +29,18 @@ TWO CORRECTNESS GUARDS
    promote it to "maximal". Such windows are marked `truncated` and the maximal
    miners exclude them rather than trusting a missing extension.
 
+WHAT THE BANDED TOP-100 MUST EXCLUDE
+------------------------------------
+Both guards above are about how windows are BUILT; the banded top-100 has to
+apply them again when it SELECTS. It once filtered on `length_km >= L` alone,
+and the >=40 km band came back with 100 rows -- every one of them `truncated`,
+every one reporting `length_km = 60.000` (the cap itself, not a measurement),
+and every one with `support = 1`. So the CSV advertised 100 popular 40 km
+sub-routes while the report said the band was empty, and the deliverable is
+POPULAR sub-routes: a route traversed by exactly one trip is shared with
+nothing. `closed` and `maximal` already filtered `~truncated`; this module was
+the one place that did not.
+
 SCALE. This is the EXACT baseline and it is quadratic in the cell count per trip.
 It exists to be a ground truth for the sketches (M7) and the suffix array (M12),
 so it takes `--max-trips` and refuses to silently attempt a run it cannot finish.
@@ -53,6 +65,10 @@ MIN_L = float(min(THRESHOLDS_KM))       # smallest threshold -> emit windows >= 
 MAX_L_CAP = config.MAX_SUBROUTE_KM      # stop extending a window past this
 TOP_N = config.TOP_K
 DELIM = ">"                             # cell separator inside a sub-route key
+# "Popular" needs at least two trips to share the route -- support 1 describes a
+# single vehicle's own path. Taken from the support grid rather than written as a
+# literal so there is still one source of truth for the floor.
+MIN_SUPPORT = min(config.SUPPORT_MIN_SUP_GRID)
 
 log = cli.setup_logging("m5")
 
@@ -88,7 +104,13 @@ def _subroutes(cells):
                 if length > MAX_L_CAP:       # windows only get longer -> stop here
                     break
                 if length >= MIN_L:
-                    key = DELIM.join(seg[i:j + 1])
+                    window = seg[i:j + 1]
+                    # A window that keeps re-entering the same cell is a vehicle
+                    # circling, not a corridor -- and its length is the sum of
+                    # the circling. See cells.revisits_ok.
+                    if not cells_mod.revisits_ok(window):
+                        continue
+                    key = DELIM.join(window)
                     if key not in seen:      # dedupe within trip
                         seen.add(key)
                         # Would the next cell exist but push us past the cap? Then
@@ -169,9 +191,15 @@ def main(scale: str, max_trips: int | None) -> None:
 
         all_rows = []
         for L in THRESHOLDS_KM:
-            cand = agg.filter(F.col("length_km") >= L)
+            # A truncated window's length IS the cap, so it measures nothing;
+            # support 1 is not popularity. See the module docstring.
+            cand = agg.filter(
+                (F.col("length_km") >= L)
+                & ~F.coalesce(F.col("truncated"), F.lit(False))
+                & (F.col("support") >= MIN_SUPPORT))
             n_cand = cand.count()
-            top = (cand.orderBy(F.col("support").desc(), F.col("length_km").desc())
+            top = (cand.orderBy(F.col("support").desc(), F.col("length_km").desc(),
+                                 F.col("subroute").asc())
                    .limit(TOP_N).collect())
             top_support = top[0]["support"] if top else 0
             med = top[len(top) // 2]["support"] if top else 0
