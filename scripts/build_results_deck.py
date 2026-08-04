@@ -120,6 +120,25 @@ def stat(s, x, y, value, unit, caption, color=INK, vsize=50, w=3.3):
     _p(tf, caption, 12, MUTED, space=0, line=1.3)
 
 
+def picture(s, name, x, y, w=None, h=None):
+    """
+    Place an image, preserving its aspect ratio.
+
+    Passing both width and height to python-pptx stretches the picture to fit
+    them, silently distorting a map into something that misrepresents the city.
+    Give one dimension; the other is derived from the file.
+    """
+    from PIL import Image
+
+    path = ROOT / "docs" / "assets" / name
+    iw, ih = Image.open(path).size
+    if w is not None:
+        h = Emu(int(w * ih / iw))
+    else:
+        w = Emu(int(h * iw / ih))
+    return s.shapes.add_picture(str(path), x, y, width=w, height=h)
+
+
 def table(s, headers, rows, y, x=None, col_w=None, size=13, hi=None):
     x = x or MARGIN
     col_w = col_w or [Inches(11.4 / len(headers))] * len(headers)
@@ -288,6 +307,21 @@ def build():
     body(s, "Method D (generalised suffix array) is exact and scalable, and carries the deliverable. "
             "Method B (maximal-frequent) is sample-scale only — it shares an O(n²) window table that "
             "OOMs at 200k, and D reproduces its output exactly in a single pass.", 5.0, size=14)
+
+    # 6b -- the corridors on the ground
+    mapfile = ROOT / "docs" / "assets" / "porto_corridors_full.png"
+    if mapfile.exists():
+        s = blank(prs)
+        eyebrow(s, "The corridors are recognisable places", color=S3)
+        headline(s, "Porto's real arteries, recovered\nwithout being told about them.", size=32)
+        picture(s, "porto_corridors_full.png", Inches(4.55), Inches(1.05), w=Inches(8.2))
+        body(s, "Nothing in the pipeline knows what a road is. The corridors emerge from "
+                "substring support over an H3 cell alphabet alone — and they land on the "
+                "Matosinhos coastal axis, the VCI ring around the centre, and the radial "
+                "routes out to Alfena and Gondomar.\n\n"
+                "Colour is the length configuration; circles are the activity zones and "
+                "anomalous routes reported alongside the deliverable.",
+             2.35, size=13, w=3.4)
 
     # 7 -- is it trustworthy?
     s = blank(prs)
